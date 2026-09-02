@@ -536,8 +536,11 @@
       <h1>USB <span>Killswitch</span> Dashboard</h1>
     </div>
     <div class="header-status">
-      <input type="password" class="admin-key-input" id="adminKeyInput"
-             placeholder="Admin API Key" value="super_secret_admin_key_change_me">
+      <div class="user-pill" id="userPill" style="display:flex; align-items:center; gap:8px; background:var(--bg-glass); border:1px solid var(--border-glass); padding:5px 12px; border-radius:20px;">
+        <span style="font-size:14px;">👤</span>
+        <span id="userEmailText" style="font-size:12px; font-weight:600; color:var(--text-primary);">Loading...</span>
+        <a href="/auth/logout" style="font-size:11px; color:var(--accent-rose); text-decoration:none; margin-left:6px; font-weight:600;">Sign Out</a>
+      </div>
       <button class="refresh-btn" id="refreshBtn" onclick="doManualRefresh()">
         <span class="refresh-icon">🔄</span> Refresh
       </button>
@@ -607,12 +610,8 @@
     let pollInterval = null;
 
     // ─── Helpers ───
-    function getAdminKey() {
-      return document.getElementById('adminKeyInput').value;
-    }
-
     async function apiFetch(path, opts = {}) {
-      const headers = { 'Content-Type': 'application/json', 'X-Admin-Key': getAdminKey(), ...opts.headers };
+      const headers = { 'Content-Type': 'application/json', ...opts.headers };
       const res = await fetch(`${API_BASE}${path}`, { ...opts, headers });
       return { status: res.status, data: await res.json() };
     }

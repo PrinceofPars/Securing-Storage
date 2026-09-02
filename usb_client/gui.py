@@ -9,7 +9,11 @@ Features:
     - Left side: "Click to Show QR Code" for mobile phone camera scanning
     - Right side: "Continue with Google" for browser-based portal authentication
   - Live 2s polling that auto-detects owner approvals from phone or web portal
-  - Tail-manifest file workspace with on-demand decrypt & incremental Lock & Save
+  - Tail-manifest file workspace with:
+    - Open single file (with full edit & save-back support)
+    - Open any specific directory or whole vault in Windows Explorer
+    - Incremental Lock & Save that detects modified files and updates vault.enc
+    - Secure wiping of all temporary working files on lock/exit
 
 Run:  python gui.py
 """
@@ -149,8 +153,8 @@ class USBKillswitchApp(ctk.CTk):
         super().__init__()
 
         self.title("USB Killswitch v2 — Zero-Trust Storage Protection")
-        self.geometry("860x680")
-        self.minsize(780, 600)
+        self.geometry("880x700")
+        self.minsize(800, 620)
         self.configure(fg_color=COLORS['bg'])
 
         # Session state
@@ -160,7 +164,8 @@ class USBKillswitchApp(ctk.CTk):
             'k_local':         None,
             'cloud_key_share': None,
             'working_dir':     None,
-            'temp_view_dirs':  [],
+            'opened_files':    {},   # rel_path -> local Path
+            'is_full_extract': False,
             'unlock_time':     None,
             'request_id':      None,
         }
@@ -211,24 +216,32 @@ class USBKillswitchApp(ctk.CTk):
         inner = ctk.CTkFrame(card, fg_color="transparent")
         inner.pack(fill="x", padx=28, pady=20)
 
-        # Backend URL
-        ctk.CTkLabel(inner, text="Backend API URL",
+        # Google Account Connection
+        ctk.CTkLabel(inner, text="Drive Owner Identity",
                      font=ctk.CTkFont(size=12, weight="bold"),
                      text_color=COLORS['text_dim']).pack(anchor="w")
-        self.init_api_url = ctk.CTkEntry(inner, placeholder_text="http://localhost:3000",
-                                         height=36, fg_color=COLORS['bg_input'],
-                                         border_color=COLORS['border'], corner_radius=8)
-        self.init_api_url.pack(fill="x", pady=(4, 12))
-        self.init_api_url.insert(0, DEFAULT_API)
 
-        # Owner Email
-        ctk.CTkLabel(inner, text="Owner Google / Work Email",
-                     font=ctk.CTkFont(size=12, weight="bold"),
-                     text_color=COLORS['text_dim']).pack(anchor="w")
-        self.init_email = ctk.CTkEntry(inner, placeholder_text="e.g. owner@gmail.com",
-                                       height=36, fg_color=COLORS['bg_input'],
-                                       border_color=COLORS['border'], corner_radius=8)
-        self.init_email.pack(fill="x", pady=(4, 12))
+        # Google Sign-In Action Button
+        self.init_google_btn = ctk.CTkButton(
+            inner, text="  Continue with Google", height=40,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#ffffff", hover_color="#f1f5f9",
+            text_color="#1f2937", corner_radius=10,
+            command=self._launch_init_google_auth
+        )
+        self.init_google_btn.pack(fill="x", pady=(4, 8))
+
+        # Verified Email Badge / Manual Entry
+        self.init_email_badge = ctk.CTkLabel(inner, text="Click 'Continue with Google' to verify owner identity",
+                                             font=ctk.CTkFont(size=11),
+                                             text_color=COLORS['text_muted'])
+        self.init_email_badge.pack(anchor="w", pady=(0, 6))
+
+        self.init_email = ctk.CTkEntry(inner, placeholder_text="Or enter email manually (e.g. owner@gmail.com)",
+                                       height=32, fg_color=COLORS['bg_input'],
+                                       border_color=COLORS['border'], corner_radius=8,
+                                       font=ctk.CTkFont(size=11))
+        self.init_email.pack(fill="x", pady=(0, 12))
 
         # Drive Label
         ctk.CTkLabel(inner, text="Drive Label (Optional)",
@@ -291,6 +304,39 @@ class USBKillswitchApp(ctk.CTk):
                       text_color=COLORS['text_dim'], corner_radius=8,
                       command=self._open_existing_vault).pack(pady=(10, 0))
 
+    def _launch_init_google_auth(self):
+        """Open browser for Google login during initialization and auto-populate email."""
+        import secrets
+        session_id = f"init_{secrets.token_hex(8)}"
+        auth_url = f"{DEFAULT_API.rstrip('/')}/auth/google?session_id={session_id}"
+        webbrowser.open(auth_url)
+
+        self.init_email_badge.configure(text="⏳ Waiting for Google Sign-In in browser...", text_color=COLORS['warning'])
+
+        def poll_google():
+            import requests
+            start_t = time.time()
+            while time.time() - start_t < 180:
+                try:
+                    r = requests.get(f"{DEFAULT_API.rstrip('/')}/api/auth/google/check-session?session_id={session_id}", timeout=5)
+                    if r.ok:
+                        data = r.json()
+                        if data.get('authenticated') and data.get('email'):
+                            verified_email = data['email']
+                            self.after(0, lambda e=verified_email: self._on_google_verified(e))
+                            return
+                except Exception:
+                    pass
+                time.sleep(1)
+
+        threading.Thread(target=poll_google, daemon=True).start()
+
+    def _on_google_verified(self, email: str):
+        self.init_email.delete(0, 'end')
+        self.init_email.insert(0, email)
+        self.init_email_badge.configure(text=f"✅ Verified Google Owner: {email}", text_color=COLORS['success'])
+        self.init_google_btn.configure(text=f"  Signed In as {email}", fg_color="#e2e8f0")
+
     def _open_existing_vault(self):
         path = filedialog.askdirectory(title="Select directory containing vault.enc and config.json")
         if path:
@@ -310,13 +356,13 @@ class USBKillswitchApp(ctk.CTk):
             self.folder_label.configure(text=f"📁  {name}/   ({path})", text_color=COLORS['text'])
 
     def _do_init(self):
-        api_url = self.init_api_url.get().strip()
+        api_url = DEFAULT_API
         email   = self.init_email.get().strip()
         label   = self.init_label.get().strip() or 'My USB Drive'
         folder  = self._selected_folder
 
-        if not api_url or not email:
-            self.init_status.configure(text="Please provide API URL and Owner Email.",
+        if not email:
+            self.init_status.configure(text="Please enter your Owner Email address.",
                                        text_color=COLORS['danger'])
             return
         if not folder or not Path(folder).is_dir():
@@ -611,13 +657,17 @@ class USBKillswitchApp(ctk.CTk):
                 k_cloud = ce.hex_to_key_bytes(cloud_key_hex)
                 manifest = ce.read_vault_manifest(VAULT_FILE, k_local, k_cloud)
 
+                # Initialize unified working directory for current session
+                work_dir = Path(tempfile.mkdtemp(prefix='usbvault_session_'))
+
                 self.session['unlocked']        = True
                 self.session['manifest']        = manifest
                 self.session['k_local']         = k_local
                 self.session['cloud_key_share'] = cloud_key_hex
                 self.session['unlock_time']     = time.time()
-                self.session['working_dir']     = None
-                self.session['temp_view_dirs']  = []
+                self.session['working_dir']     = work_dir
+                self.session['opened_files']    = {}
+                self.session['is_full_extract'] = False
 
                 self.after(0, lambda: self._show_workspace_screen())
 
@@ -836,7 +886,7 @@ class USBKillswitchApp(ctk.CTk):
         self.after(2000, self._show_unlock_screen)
 
     # ──────────────────────────────────────────────────────────────────────
-    # Screen 4: Vault Workspace (Manifest TreeView, On-Demand Decrypt, Lock & Save)
+    # Screen 4: Vault Workspace (Manifest TreeView, On-Demand Decrypt, Directory Explorer, Lock & Save)
     # ──────────────────────────────────────────────────────────────────────
 
     def _show_workspace_screen(self):
@@ -881,7 +931,7 @@ class USBKillswitchApp(ctk.CTk):
         self.ws_timer.pack(side="right", padx=(0, 10))
 
         # Lock buttons
-        ctk.CTkButton(top_inner, text="🔒 Lock & Save", height=32, width=115,
+        ctk.CTkButton(top_inner, text="🔒 Lock & Save", height=32, width=120,
                       font=ctk.CTkFont(size=12, weight="bold"),
                       fg_color=COLORS['accent'], hover_color=COLORS['accent_hover'],
                       corner_radius=8,
@@ -903,22 +953,28 @@ class USBKillswitchApp(ctk.CTk):
 
         # Header toolbar
         browser_header = ctk.CTkFrame(browser_frame, fg_color="transparent")
-        browser_header.pack(fill="x", padx=16, pady=(12, 6))
+        browser_header.pack(fill="x", padx=16, pady=(12, 8))
 
-        ctk.CTkLabel(browser_header, text=f"Encrypted Files ({len(files)} items)",
+        ctk.CTkLabel(browser_header, text=f"Encrypted Vault Files ({len(files)} items)",
                      font=ctk.CTkFont(size=13, weight="bold"),
                      text_color=COLORS['text_dim']).pack(side="left")
 
         btn_bar = ctk.CTkFrame(browser_header, fg_color="transparent")
         btn_bar.pack(side="right")
 
-        ctk.CTkButton(btn_bar, text="📄 Open Selected File", height=28, width=130,
+        ctk.CTkButton(btn_bar, text="📄 Open File", height=28, width=105,
                       font=ctk.CTkFont(size=11),
                       fg_color=COLORS['bg_input'], hover_color=COLORS['border'],
                       text_color=COLORS['text'], corner_radius=6,
-                      command=self._open_selected_file).pack(side="left", padx=(0, 8))
+                      command=self._open_selected_item).pack(side="left", padx=(0, 6))
 
-        ctk.CTkButton(btn_bar, text="✏️ Edit All in Explorer", height=28, width=160,
+        ctk.CTkButton(btn_bar, text="📂 Open Folder in Explorer", height=28, width=175,
+                      font=ctk.CTkFont(size=11, weight="bold"),
+                      fg_color=COLORS['bg_input'], hover_color=COLORS['border'],
+                      text_color=COLORS['accent_hover'], corner_radius=6,
+                      command=self._open_selected_folder).pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(btn_bar, text="✏️ Edit All in Explorer", height=28, width=155,
                       font=ctk.CTkFont(size=11, weight="bold"),
                       fg_color=COLORS['accent_purple'], hover_color='#7c3aed',
                       text_color='#ffffff', corner_radius=6,
@@ -949,12 +1005,12 @@ class USBKillswitchApp(ctk.CTk):
         self.file_tree = ttk.Treeview(tree_container, style="Vault.Treeview",
                                       columns=("size", "type", "modified"), show="tree headings",
                                       selectmode="browse")
-        self.file_tree.heading("#0", text="File Path", anchor="w")
+        self.file_tree.heading("#0", text="Name / Path", anchor="w")
         self.file_tree.heading("size", text="Size", anchor="e")
         self.file_tree.heading("type", text="Type", anchor="w")
         self.file_tree.heading("modified", text="Modified", anchor="w")
 
-        self.file_tree.column("#0", width=360, minwidth=220)
+        self.file_tree.column("#0", width=380, minwidth=240)
         self.file_tree.column("size", width=90, anchor="e")
         self.file_tree.column("type", width=70, anchor="w")
         self.file_tree.column("modified", width=140, anchor="w")
@@ -965,13 +1021,14 @@ class USBKillswitchApp(ctk.CTk):
         self.file_tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        self.file_tree.bind("<Double-1>", lambda event: self._open_selected_file())
+        # Double click opens file or directory
+        self.file_tree.bind("<Double-1>", lambda event: self._open_selected_item())
 
         # Populate tree
         self._populate_manifest_tree(files)
 
         # ─── Bottom Status Footer ───
-        bottom = ctk.CTkFrame(self, fg_color=COLORS['bg_card'], height=32, corner_radius=0,
+        bottom = ctk.CTkFrame(self, fg_color=COLORS['bg_card'], height=34, corner_radius=0,
                               border_width=1, border_color=COLORS['border'])
         bottom.pack(fill="x")
         bottom.pack_propagate(False)
@@ -987,7 +1044,7 @@ class USBKillswitchApp(ctk.CTk):
                      font=ctk.CTkFont(size=10),
                      text_color=COLORS['text_muted']).pack(side="left")
 
-        self.ws_status_footer = ctk.CTkLabel(bottom_inner, text="Vault on-demand mode active",
+        self.ws_status_footer = ctk.CTkLabel(bottom_inner, text="Vault on-demand mode active — modifications are auto-saved on Lock",
                                              font=ctk.CTkFont(size=10),
                                              text_color=COLORS['text_muted'])
         self.ws_status_footer.pack(side="right")
@@ -995,8 +1052,9 @@ class USBKillswitchApp(ctk.CTk):
         self._start_timer()
 
     def _populate_manifest_tree(self, file_entries: List[dict]):
+        self.file_tree.delete(*self.file_tree.get_children())
         nodes = {'': ''}
-        self._file_entry_map = {}
+        self._tree_item_map = {}  # item_id -> {'is_dir': bool, 'path': str, 'entry': dict}
 
         for entry in sorted(file_entries, key=lambda e: e['path']):
             path_parts = entry['path'].split('/')
@@ -1007,9 +1065,11 @@ class USBKillswitchApp(ctk.CTk):
                 curr_path = f"{curr_path}/{folder}" if curr_path else folder
                 if curr_path not in nodes:
                     node_id = self.file_tree.insert(parent_id, 'end',
-                                                     text=f"📁 {folder}/",
-                                                     values=('', 'Folder', ''))
+                                                     text=f"📁  {folder}/",
+                                                     values=('', 'Folder', ''),
+                                                     open=True)
                     nodes[curr_path] = node_id
+                    self._tree_item_map[node_id] = {'is_dir': True, 'path': curr_path, 'entry': None}
                 parent_id = nodes[curr_path]
 
             filename = path_parts[-1]
@@ -1027,6 +1087,7 @@ class USBKillswitchApp(ctk.CTk):
                 '.py': 'Python', '.js': 'JS', '.html': 'HTML',
                 '.css': 'CSS', '.pdf': 'PDF', '.png': 'Image',
                 '.jpg': 'Image', '.jpeg': 'Image', '.docx': 'Doc',
+                '.xlsx': 'Excel', '.csv': 'Data',
             }
             file_type = type_map.get(ext, ext[1:].upper() if ext else 'File')
 
@@ -1034,31 +1095,81 @@ class USBKillswitchApp(ctk.CTk):
             mtime_str = time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime)) if mtime else '-'
 
             item_id = self.file_tree.insert(parent_id, 'end',
-                                            text=f"📄 {filename}",
+                                            text=f"📄  {filename}",
                                             values=(size_str, file_type, mtime_str))
-            self._file_entry_map[item_id] = entry
+            self._tree_item_map[item_id] = {'is_dir': False, 'path': entry['path'], 'entry': entry}
 
-    def _open_selected_file(self):
+    def _open_selected_item(self):
+        """Opens selected file in default app or opens folder in Windows Explorer."""
         selected = self.file_tree.selection()
         if not selected:
+            # If nothing selected, open entire vault root in explorer
+            self._open_all_in_explorer()
             return
 
         item_id = selected[0]
-        entry = self._file_entry_map.get(item_id)
-        if not entry:
+        meta = self._tree_item_map.get(item_id)
+        if not meta:
             return
 
+        if meta['is_dir']:
+            # Selected a folder node -> decrypt and open that specific directory in explorer
+            self._open_directory_path(meta['path'])
+        else:
+            # Selected a single file -> decrypt and open file
+            self._open_single_file(meta['entry'])
+
+    def _open_selected_folder(self):
+        """Open the selected directory in Windows Explorer (or root if file/none selected)."""
+        selected = self.file_tree.selection()
+        if not selected:
+            self._open_all_in_explorer()
+            return
+
+        item_id = selected[0]
+        meta = self._tree_item_map.get(item_id)
+        if not meta:
+            self._open_all_in_explorer()
+            return
+
+        if meta['is_dir']:
+            self._open_directory_path(meta['path'])
+        else:
+            # If file selected, open its parent folder
+            parent_dir = str(Path(meta['path']).parent).replace('\\', '/')
+            if parent_dir and parent_dir != '.':
+                self._open_directory_path(parent_dir)
+            else:
+                self._open_all_in_explorer()
+
+    def _open_single_file(self, entry: dict):
+        """Decrypt single file to working directory and launch default application."""
         k_local = self.session.get('k_local')
         cloud_key_hex = self.session.get('cloud_key_share')
-        if not k_local or not cloud_key_hex:
+        work_dir = self.session.get('working_dir')
+
+        if not k_local or not cloud_key_hex or not work_dir:
             messagebox.showerror("Error", "Session key material missing.")
             return
 
         try:
             k_cloud = ce.hex_to_key_bytes(cloud_key_hex)
-            out_path = ce.decrypt_single_file_to_temp(VAULT_FILE, k_local, k_cloud, entry)
-            self.session['temp_view_dirs'].append(out_path.parent)
+            rel_path = entry['path']
+            out_path = work_dir / rel_path
 
+            # Decrypt if not already decrypted
+            if not out_path.exists():
+                plaintext = ce.decrypt_single_file(VAULT_FILE, k_local, k_cloud, entry)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_bytes(plaintext)
+                try:
+                    os.utime(out_path, (entry.get('modified', time.time()), entry.get('modified', time.time())))
+                except Exception:
+                    pass
+
+            self.session['opened_files'][rel_path] = out_path
+
+            # Launch default application
             if sys.platform == 'win32':
                 os.startfile(str(out_path))
             elif sys.platform == 'darwin':
@@ -1066,34 +1177,88 @@ class USBKillswitchApp(ctk.CTk):
             else:
                 subprocess.Popen(['xdg-open', str(out_path)])
 
-            self.ws_status_footer.configure(text=f"Decrypted on-demand: {entry['path']}")
+            self.ws_status_footer.configure(text=f"Opened: {rel_path} — edits will be saved on Lock")
+            self.ws_status_text.configure(text="EDIT MODE (ACTIVE)", text_color=COLORS['warning'])
 
         except Exception as e:
-            logger.exception("On-demand decrypt error")
+            logger.exception("Single file open error")
             messagebox.showerror("Decryption Error", f"Could not decrypt file: {e}")
 
-    def _open_all_in_explorer(self):
-        if self.session.get('working_dir') and Path(self.session['working_dir']).exists():
-            self._open_folder(Path(self.session['working_dir']))
-            return
-
+    def _open_directory_path(self, dir_prefix: str):
+        """Decrypt all files inside a specific directory prefix and open in Windows Explorer."""
         k_local = self.session.get('k_local')
         cloud_key_hex = self.session.get('cloud_key_share')
         manifest = self.session.get('manifest')
+        work_dir = self.session.get('working_dir')
 
-        if not k_local or not cloud_key_hex or not manifest:
+        if not k_local or not cloud_key_hex or not manifest or not work_dir:
             return
 
         self.ws_status_text.configure(text="EXTRACTING...", text_color=COLORS['warning'])
         self.update_idletasks()
 
+        def do_extract():
+            try:
+                k_cloud = ce.hex_to_key_bytes(cloud_key_hex)
+                ce.decrypt_directory_to_working_dir(
+                    VAULT_FILE, k_local, k_cloud, manifest,
+                    dir_prefix=dir_prefix, target_dir=work_dir
+                )
+
+                # Record all extracted files
+                clean_p = dir_prefix.strip('/')
+                for f in manifest.get('files', []):
+                    if f['path'] == clean_p or f['path'].startswith(clean_p + '/'):
+                        self.session['opened_files'][f['path']] = work_dir / f['path']
+
+                target_folder = work_dir / clean_p
+                target_folder.mkdir(parents=True, exist_ok=True)
+
+                self.after(0, lambda: self._on_directory_ready(target_folder, clean_p))
+
+            except Exception as e:
+                logger.exception("Directory decrypt error")
+                self.after(0, lambda: messagebox.showerror("Decryption Error", f"Could not open directory: {e}"))
+                self.after(0, lambda: self.ws_status_text.configure(text="ACTIVE SESSION", text_color=COLORS['success']))
+
+        threading.Thread(target=do_extract, daemon=True).start()
+
+    def _on_directory_ready(self, target_folder: Path, dir_name: str):
+        self.ws_status_text.configure(text="EDIT MODE (ACTIVE)", text_color=COLORS['warning'])
+        self.ws_status_footer.configure(text=f"Opened directory: {dir_name}/ in Explorer")
+        self._open_folder(target_folder)
+
+    def _open_all_in_explorer(self):
+        """Extract entire vault to working directory and open root in Explorer."""
+        k_local = self.session.get('k_local')
+        cloud_key_hex = self.session.get('cloud_key_share')
+        manifest = self.session.get('manifest')
+        work_dir = self.session.get('working_dir')
+
+        if not k_local or not cloud_key_hex or not manifest or not work_dir:
+            return
+
+        self.ws_status_text.configure(text="EXTRACTING ALL...", text_color=COLORS['warning'])
+        self.update_idletasks()
+
         def do_bulk():
             try:
                 k_cloud = ce.hex_to_key_bytes(cloud_key_hex)
-                work_dir = ce.decrypt_files_to_working_dir(VAULT_FILE, k_local, k_cloud, manifest)
-                self.session['working_dir'] = work_dir
+                ce.decrypt_files_to_working_dir(
+                    VAULT_FILE, k_local, k_cloud, manifest,
+                    file_entries=manifest.get('files', [])
+                )
+                # Copy into unified work dir
+                ce.decrypt_directory_to_working_dir(
+                    VAULT_FILE, k_local, k_cloud, manifest,
+                    dir_prefix='', target_dir=work_dir
+                )
 
-                self.after(0, lambda: self._on_working_dir_ready(work_dir))
+                self.session['is_full_extract'] = True
+                for f in manifest.get('files', []):
+                    self.session['opened_files'][f['path']] = work_dir / f['path']
+
+                self.after(0, lambda: self._on_bulk_ready(work_dir))
 
             except Exception as e:
                 logger.exception("Bulk decrypt error")
@@ -1102,12 +1267,13 @@ class USBKillswitchApp(ctk.CTk):
 
         threading.Thread(target=do_bulk, daemon=True).start()
 
-    def _on_working_dir_ready(self, work_dir: Path):
-        self.ws_status_text.configure(text="EDIT MODE (ACTIVE)", text_color=COLORS['warning'])
-        self.ws_status_footer.configure(text=f"Working dir: {str(work_dir)[-35:]}")
+    def _on_bulk_ready(self, work_dir: Path):
+        self.ws_status_text.configure(text="EDIT MODE (FULL VAULT)", text_color=COLORS['warning'])
+        self.ws_status_footer.configure(text="All files extracted to temporary Explorer workspace")
         self._open_folder(work_dir)
 
     def _do_lock_and_save(self):
+        """Inspects all opened/edited files, updates vault.enc incrementally, and wipes temp session."""
         if not self.session.get('unlocked'):
             return
 
@@ -1115,6 +1281,7 @@ class USBKillswitchApp(ctk.CTk):
         manifest = self.session.get('manifest')
         k_local = self.session.get('k_local')
         cloud_key_hex = self.session.get('cloud_key_share')
+        is_full = self.session.get('is_full_extract', False)
 
         self.ws_status_text.configure(text="SAVING & LOCKING...", text_color=COLORS['warning'])
         self.update_idletasks()
@@ -1124,12 +1291,14 @@ class USBKillswitchApp(ctk.CTk):
                 k_cloud = ce.hex_to_key_bytes(cloud_key_hex)
 
                 if working_dir and Path(working_dir).exists() and manifest:
-                    ce.update_vault_on_lock(VAULT_FILE, k_local, k_cloud, Path(working_dir), manifest)
+                    # Update vault incrementally:
+                    # If full extraction, deleted files are synced. If partial, untouched files are kept.
+                    new_manifest = ce.update_vault_on_lock(
+                        VAULT_FILE, k_local, k_cloud, Path(working_dir), manifest,
+                        allow_partial=(not is_full)
+                    )
                     ce.secure_wipe_temp(Path(working_dir))
-
-                for v_dir in self.session.get('temp_view_dirs', []):
-                    if Path(v_dir).exists():
-                        ce.secure_wipe_temp(Path(v_dir))
+                    logger.info("Vault updated and temp working files securely wiped.")
 
                 self.after(0, self._lock_cleanup_and_exit)
 
@@ -1156,10 +1325,6 @@ class USBKillswitchApp(ctk.CTk):
             if working_dir and Path(working_dir).exists():
                 ce.secure_wipe_temp(Path(working_dir))
 
-            for v_dir in self.session.get('temp_view_dirs', []):
-                if Path(v_dir).exists():
-                    ce.secure_wipe_temp(Path(v_dir))
-
             self.after(0, self._lock_cleanup_and_exit)
 
         threading.Thread(target=do_wipe, daemon=True).start()
@@ -1167,8 +1332,8 @@ class USBKillswitchApp(ctk.CTk):
     def _lock_cleanup_and_exit(self):
         self.session = {
             'unlocked': False, 'manifest': None, 'k_local': None,
-            'cloud_key_share': None, 'working_dir': None, 'temp_view_dirs': [],
-            'unlock_time': None, 'request_id': None
+            'cloud_key_share': None, 'working_dir': None, 'opened_files': {},
+            'is_full_extract': False, 'unlock_time': None, 'request_id': None
         }
         if self._timer_id:
             self.after_cancel(self._timer_id)
@@ -1228,9 +1393,6 @@ class USBKillswitchApp(ctk.CTk):
             working_dir = self.session.get('working_dir')
             if working_dir and Path(working_dir).exists():
                 ce.secure_wipe_temp(Path(working_dir))
-            for v_dir in self.session.get('temp_view_dirs', []):
-                if Path(v_dir).exists():
-                    ce.secure_wipe_temp(Path(v_dir))
             logger.info("Session wiped on exit.")
         self.destroy()
 

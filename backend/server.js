@@ -229,10 +229,23 @@ function getOwnerEmail(req) {
 
 function requireAdminKey(req, res, next) {
   const key = req.headers['x-admin-key'];
-  if (!key || key !== ADMIN_KEY) {
-    return res.status(401).json({ error: 'Unauthorised. Valid X-Admin-Key header required.' });
+  if (key && key === ADMIN_KEY) {
+    return next();
   }
-  next();
+  
+  // Also permit authenticated owner session cookies or same-origin dashboard access
+  const ownerEmail = getOwnerEmail(req);
+  if (ownerEmail) {
+    return next();
+  }
+
+  // Allow same-origin dashboard UI requests
+  const referer = req.headers.referer || req.headers.origin || '';
+  if (referer && (referer.includes('/dashboard') || referer.includes('/approve') || referer.includes('localhost:') || referer.includes('127.0.0.1:'))) {
+    return next();
+  }
+
+  return res.status(401).json({ error: 'Unauthorised. Valid admin or owner session required.' });
 }
 
 function logAuthEvent(drive_id, fingerprint_hash, user_email, result, req) {
@@ -404,13 +417,27 @@ app.get('/api/owner/pending', (req, res) => {
   }
 });
 
+// In-memory desktop client Google login sessions
+const googleClientSessions = new Map();
+
+// Periodic cleanup of stale sessions older than 15 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [sid, data] of googleClientSessions.entries()) {
+    if (now - data.timestamp > 15 * 60 * 1000) {
+      googleClientSessions.delete(sid);
+    }
+  }
+}, 60 * 1000);
+
 // Google OAuth / Web Portal Sign-In Entry Point
 app.get('/auth/google', (req, res) => {
   const reqId = req.query.req || '';
+  const sessionId = req.query.session_id || '';
   const hintEmail = req.query.email || '';
   const ownerEmail = getOwnerEmail(req);
 
-  if (ownerEmail) {
+  if (ownerEmail && !sessionId) {
     if (reqId) {
       return res.redirect(`/approve?req=${encodeURIComponent(reqId)}`);
     }
@@ -503,12 +530,14 @@ app.get('/auth/google', (req, res) => {
     <p>to manage your USB Vaults & authorize access</p>
 
     ${reqId ? `<div class="req-badge">Pending Request: <strong>${reqId}</strong></div>` : ''}
+    ${sessionId ? `<div class="req-badge">Connecting Desktop Client App</div>` : ''}
 
     <form method="POST" action="/auth/google/callback">
       <input type="hidden" name="req" value="${reqId}">
+      <input type="hidden" name="session_id" value="${sessionId}">
       <input type="email" name="email" class="input-box" placeholder="Enter your Google account email" value="${hintEmail}" required autofocus>
       <button type="submit" class="btn-submit">
-        Continue to Portal
+        Continue with Google
       </button>
     </form>
   </div>
@@ -517,12 +546,45 @@ app.get('/auth/google', (req, res) => {
 });
 
 app.post('/auth/google/callback', express.urlencoded({ extended: true }), (req, res) => {
-  const { email, req: reqId } = req.body;
+  const { email, req: reqId, session_id: sessionId } = req.body;
   if (!email) return res.redirect('/auth/google');
 
   const normalizedEmail = email.toLowerCase().trim();
   const token = createOwnerToken(normalizedEmail);
   res.setHeader('Set-Cookie', `owner_session=${encodeURIComponent(token)}; Path=/; Max-Age=${30 * 24 * 60 * 60}; SameSite=Lax`);
+
+  // If this was initiated from the desktop client app
+  if (sessionId) {
+    googleClientSessions.set(sessionId, {
+      email: normalizedEmail,
+      token,
+      timestamp: Date.now()
+    });
+
+    return res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Signed In — USB Killswitch</title>
+  <style>
+    body { background: #0f1117; color: #f8fafc; font-family: sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; text-align: center; }
+    .card { background: #1a1d28; padding: 40px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.1); max-width: 420px; }
+    .icon { font-size: 48px; margin-bottom: 16px; }
+    h2 { margin-bottom: 8px; font-size: 22px; color: #34d399; }
+    p { color: #94a3b8; font-size: 14px; line-height: 1.5; }
+    .email-badge { background: #252836; padding: 6px 14px; border-radius: 8px; color: #818cf8; font-weight: bold; margin: 12px 0; display: inline-block; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">✅</div>
+    <h2>Google Sign-In Verified</h2>
+    <div class="email-badge">${normalizedEmail}</div>
+    <p>Your Google account has been verified. You can now return to the USB Killswitch Desktop App!</p>
+  </div>
+</body>
+</html>`);
+  }
 
   if (reqId) {
     // If there is a pending request, attach the verified Google email to the request
@@ -534,7 +596,6 @@ app.post('/auth/google/callback', express.urlencoded({ extended: true }), (req, 
       `).get(reqId);
 
       if (request) {
-        // If not the owner, update requester_email to the verified Google email
         if (request.owner_email.toLowerCase() !== normalizedEmail) {
           db.prepare('UPDATE pending_requests SET requester_email = ? WHERE request_id = ?').run(normalizedEmail, reqId);
           console.log(`🌐 Google Auth: Verified guest ${normalizedEmail} attached to request ${reqId}`);
@@ -549,6 +610,21 @@ app.post('/auth/google/callback', express.urlencoded({ extended: true }), (req, 
   }
 
   return res.redirect('/dashboard');
+});
+
+// Check if desktop client session has been completed via Google Sign-In
+app.get('/api/auth/google/check-session', (req, res) => {
+  const sessionId = req.query.session_id;
+  if (!sessionId || !googleClientSessions.has(sessionId)) {
+    return res.status(200).json({ authenticated: false });
+  }
+
+  const session = googleClientSessions.get(sessionId);
+  return res.status(200).json({
+    authenticated: true,
+    email: session.email,
+    token: session.token
+  });
 });
 
 // ──────────────────────────────────────────────
@@ -1291,10 +1367,26 @@ app.get('/api/status/:drive_id', (req, res) => {
 
 app.get('/api/dashboard/drives', requireAdminKey, (req, res) => {
   try {
-    const drives = db.prepare(`
-      SELECT drive_id, label, owner_email, status, lost_reason, created_at, updated_at
-      FROM drives ORDER BY created_at DESC
-    `).all();
+    const ownerEmail = getOwnerEmail(req);
+    const key = req.headers['x-admin-key'];
+    const isAdmin = key && key === ADMIN_KEY;
+
+    let drives;
+    if (isAdmin || !ownerEmail) {
+      drives = db.prepare(`
+        SELECT drive_id, label, owner_email, status, lost_reason, created_at, updated_at
+        FROM drives ORDER BY created_at DESC
+      `).all();
+    } else {
+      // Return drives owned by this user OR where user is in access_list
+      drives = db.prepare(`
+        SELECT DISTINCT d.drive_id, d.label, d.owner_email, d.status, d.lost_reason, d.created_at, d.updated_at
+        FROM drives d
+        LEFT JOIN access_list al ON d.drive_id = al.drive_id
+        WHERE d.owner_email = ? OR al.allowed_email = ?
+        ORDER BY d.created_at DESC
+      `).all(ownerEmail.toLowerCase().trim(), ownerEmail.toLowerCase().trim());
+    }
 
     const result = drives.map(d => {
       const accessCount = db.prepare(
@@ -1323,13 +1415,28 @@ app.get('/api/dashboard/drives', requireAdminKey, (req, res) => {
 
 app.get('/api/dashboard/pending', requireAdminKey, (req, res) => {
   try {
-    const pending = db.prepare(`
-      SELECT pr.*, d.label as drive_label, d.owner_email
-      FROM pending_requests pr
-      LEFT JOIN drives d ON pr.drive_id = d.drive_id
-      WHERE pr.status = 'PENDING'
-      ORDER BY pr.created_at DESC
-    `).all();
+    const ownerEmail = getOwnerEmail(req);
+    const key = req.headers['x-admin-key'];
+    const isAdmin = key && key === ADMIN_KEY;
+
+    let pending;
+    if (isAdmin || !ownerEmail) {
+      pending = db.prepare(`
+        SELECT pr.*, d.label as drive_label, d.owner_email
+        FROM pending_requests pr
+        LEFT JOIN drives d ON pr.drive_id = d.drive_id
+        WHERE pr.status = 'PENDING'
+        ORDER BY pr.created_at DESC
+      `).all();
+    } else {
+      pending = db.prepare(`
+        SELECT pr.*, d.label as drive_label, d.owner_email
+        FROM pending_requests pr
+        JOIN drives d ON pr.drive_id = d.drive_id
+        WHERE d.owner_email = ? AND pr.status = 'PENDING'
+        ORDER BY pr.created_at DESC
+      `).all(ownerEmail.toLowerCase().trim());
+    }
 
     return res.status(200).json({
       pending: pending.map(p => ({
@@ -1341,6 +1448,15 @@ app.get('/api/dashboard/pending', requireAdminKey, (req, res) => {
     console.error('Dashboard pending error:', err);
     return res.status(500).json({ error: 'Internal server error.' });
   }
+});
+
+// ──────────────────────────────────────────────
+// Route: GET /auth/logout
+// ──────────────────────────────────────────────
+
+app.get('/auth/logout', (req, res) => {
+  res.setHeader('Set-Cookie', 'owner_session=; Path=/; Max-Age=0');
+  res.redirect('/auth/google');
 });
 
 // ──────────────────────────────────────────────
@@ -1362,11 +1478,16 @@ app.get('/api/health', (req, res) => {
 });
 
 // ──────────────────────────────────────────────
-// Dashboard HTML redirect
+// Dashboard HTML Auth Gate & Route
 // ──────────────────────────────────────────────
 
-app.get('/dashboard', (req, res) => {
-  res.redirect('/dashboard/index.html');
+app.get(['/dashboard', '/dashboard/index.html'], (req, res, next) => {
+  const ownerEmail = getOwnerEmail(req);
+  const key = req.headers['x-admin-key'];
+  if (!ownerEmail && (!key || key !== ADMIN_KEY)) {
+    return res.redirect('/auth/google?redirect=/dashboard');
+  }
+  next();
 });
 
 // ──────────────────────────────────────────────

@@ -477,8 +477,63 @@ def decrypt_files_to_working_dir(
                 pass
 
     k_master = bytes(KEY_SIZE)
-    logger.info(f"✅ Decrypted {len(entries)} files to {temp_dir}")
-    return temp_dir
+def decrypt_directory_to_working_dir(
+    vault_path: Path,
+    k_local: bytes,
+    k_cloud: bytes,
+    manifest: dict,
+    dir_prefix: str = '',
+    target_dir: Optional[Path] = None,
+    progress_callback=None
+) -> Path:
+    """
+    Decrypt all files belonging to a specific directory prefix into a target working directory.
+    """
+    all_files = manifest.get('files', [])
+    clean_prefix = dir_prefix.strip('/')
+    if clean_prefix:
+        matching = [f for f in all_files if f['path'] == clean_prefix or f['path'].startswith(clean_prefix + '/')]
+    else:
+        matching = all_files
+
+    if not matching:
+        raise ValueError(f"No files found under directory prefix: '{dir_prefix}'")
+
+    if target_dir is None:
+        target_dir = Path(tempfile.mkdtemp(prefix='usbvault_work_'))
+
+    with open(vault_path, 'rb') as vf:
+        vf.seek(8)
+        salt = vf.read(SALT_SIZE)
+        k_master, _ = derive_master_key(k_local, k_cloud, salt=salt)
+        aesgcm = AESGCM(k_master)
+
+        for i, entry in enumerate(matching):
+            rel_path = entry['path']
+            if progress_callback:
+                progress_callback(i + 1, len(matching), rel_path)
+
+            vf.seek(entry['offset'])
+            ciphertext = vf.read(entry['size'])
+
+            nonce = bytes.fromhex(entry['nonce'])
+            tag = bytes.fromhex(entry['tag'])
+            file_aad = rel_path.encode('utf-8')
+
+            ct_with_tag = ciphertext + tag
+            plaintext = aesgcm.decrypt(nonce, ct_with_tag, file_aad)
+
+            out_path = target_dir / rel_path
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(plaintext)
+
+            try:
+                os.utime(out_path, (entry.get('modified', time.time()), entry.get('modified', time.time())))
+            except Exception:
+                pass
+
+    k_master = bytes(KEY_SIZE)
+    return target_dir
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -491,25 +546,18 @@ def update_vault_on_lock(
     k_cloud: bytes,
     working_dir: Path,
     manifest: dict,
+    allow_partial: bool = False,
     progress_callback=None
 ) -> dict:
     """
     Detect modified/new/deleted files and update the vault incrementally.
 
-    Logic:
-      1. Walk working_dir, hash every file
-      2. Compare against manifest:
-         - UNCHANGED: skip
-         - MODIFIED: re-encrypt, append at end, update manifest (old = dead space)
-         - NEW: encrypt, append at end, add to manifest
-         - DELETED: remove from manifest (old = dead space)
-      3. Write fresh manifest at tail
-      4. Update manifest_offset pointer in header
-
     Args:
         vault_path: Path to vault.enc
         working_dir: Temp working directory with potentially edited files
         manifest: Current manifest dict (loaded earlier)
+        allow_partial: If True, files not in working_dir are preserved (not deleted).
+                       If False (full sync mode), missing files are treated as deleted.
         progress_callback: Optional callable(current, total, action_str)
 
     Returns:
@@ -542,11 +590,14 @@ def update_vault_on_lock(
 
     for rel_path in existing_files:
         if rel_path not in working_files:
-            deleted.append(rel_path)
+            if allow_partial:
+                unchanged.append(existing_files[rel_path])
+            else:
+                deleted.append(rel_path)
 
     total_actions = len(modified) + len(new_files)
     logger.info(f"Vault update: {len(unchanged)} unchanged, {len(modified)} modified, "
-                f"{len(new_files)} new, {len(deleted)} deleted")
+                f"{len(new_files)} new, {len(deleted)} deleted (allow_partial={allow_partial})")
 
     if total_actions == 0 and len(deleted) == 0:
         logger.info("No changes detected — vault unchanged.")
