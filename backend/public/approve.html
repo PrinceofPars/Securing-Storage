@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>USB Killswitch — Device Approval</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0a0e1a;
+      --bg-secondary: #111827;
+      --bg-card: rgba(17, 24, 39, 0.75);
+      --bg-glass: rgba(255, 255, 255, 0.05);
+      --bg-glass-hover: rgba(255, 255, 255, 0.08);
+      --border-glass: rgba(255, 255, 255, 0.1);
+      --border-focus: rgba(99, 102, 241, 0.5);
+
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+
+      --accent-indigo: #6366f1;
+      --accent-violet: #8b5cf6;
+      --accent-emerald: #10b981;
+      --accent-rose: #f43f5e;
+      --accent-amber: #f59e0b;
+
+      --gradient-primary: linear-gradient(135deg, #6366f1, #8b5cf6);
+      --gradient-emerald: linear-gradient(135deg, #10b981, #059669);
+      --gradient-rose: linear-gradient(135deg, #f43f5e, #e11d48);
+
+      --shadow-card: 0 12px 36px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.2);
+      --shadow-glow: 0 0 35px rgba(99, 102, 241, 0.2);
+      --radius-sm: 8px;
+      --radius-md: 14px;
+      --radius-lg: 20px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      position: relative;
+      overflow-x: hidden;
+    }
+
+    body::before, body::after {
+      content: '';
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(100px);
+      z-index: -1;
+      opacity: 0.4;
+      pointer-events: none;
+    }
+    body::before {
+      width: 400px; height: 400px;
+      background: radial-gradient(circle, rgba(99, 102, 241, 0.25), transparent 70%);
+      top: -100px; right: -50px;
+    }
+    body::after {
+      width: 350px; height: 350px;
+      background: radial-gradient(circle, rgba(139, 92, 246, 0.2), transparent 70%);
+      bottom: -80px; left: -40px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 440px;
+      margin: 0 auto;
+    }
+
+    .brand {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    .brand-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 52px;
+      height: 52px;
+      border-radius: 16px;
+      background: var(--gradient-primary);
+      box-shadow: var(--shadow-glow);
+      margin-bottom: 12px;
+    }
+    .brand h1 {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+    }
+    .brand p {
+      font-size: 13px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+
+    .card {
+      background: var(--bg-card);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      box-shadow: var(--shadow-card);
+      margin-bottom: 16px;
+    }
+
+    .code-badge-wrap {
+      text-align: center;
+      padding: 16px;
+      background: var(--bg-glass);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-md);
+      margin-bottom: 20px;
+    }
+    .code-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .code-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--accent-amber);
+      letter-spacing: 2px;
+    }
+
+    .info-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .info-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .info-item:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+    .info-title {
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+    .info-data {
+      color: var(--text-primary);
+      font-weight: 600;
+      text-align: right;
+      max-width: 60%;
+      word-break: break-all;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .status-pending { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
+    .status-approved { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .status-denied { background: rgba(244, 63, 94, 0.15); color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.3); }
+
+    .actions-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 13px 18px;
+      border-radius: var(--radius-md);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid transparent;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.2s ease;
+      text-decoration: none;
+    }
+    .btn:active {
+      transform: scale(0.98);
+    }
+
+    .btn-primary {
+      background: var(--gradient-emerald);
+      color: #ffffff;
+      box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3);
+    }
+    .btn-primary:hover {
+      box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4);
+    }
+
+    .btn-secondary {
+      background: var(--bg-glass);
+      color: var(--text-primary);
+      border-color: var(--border-glass);
+    }
+    .btn-secondary:hover {
+      background: var(--bg-glass-hover);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .btn-forever {
+      background: var(--gradient-primary);
+      color: #ffffff;
+      box-shadow: 0 4px 14px rgba(99, 102, 241, 0.3);
+    }
+
+    .btn-danger {
+      background: rgba(244, 63, 94, 0.15);
+      color: #fb7185;
+      border-color: rgba(244, 63, 94, 0.3);
+    }
+    .btn-danger:hover {
+      background: rgba(244, 63, 94, 0.25);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* Auth modal / section */
+    .auth-section {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border-glass);
+    }
+    .input-field {
+      width: 100%;
+      background: var(--bg-glass);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      color: var(--text-primary);
+      font-size: 14px;
+      margin-bottom: 10px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .input-field:focus {
+      border-color: var(--accent-indigo);
+    }
+
+    .feedback-overlay {
+      text-align: center;
+      padding: 24px 12px;
+    }
+    .feedback-icon {
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+    }
+    .feedback-success { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+    .feedback-error { background: rgba(244, 63, 94, 0.15); color: #fb7185; }
+    .feedback-title { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+    .feedback-msg { font-size: 13px; color: var(--text-secondary); }
+
+    .spinner {
+      width: 24px;
+      height: 24px;
+      border: 3px solid rgba(255,255,255,0.1);
+      border-top-color: var(--accent-indigo);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 20px auto;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .footer {
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 16px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div class="brand">
+      <div class="brand-icon">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+        </svg>
+      </div>
+      <h1>Drive Access Request</h1>
+      <p>Remote authorization portal</p>
+    </div>
+
+    <!-- Main Card -->
+    <div class="card" id="mainCard">
+      <div id="loadingState">
+        <div class="spinner"></div>
+        <p style="text-align: center; font-size: 13px; color: var(--text-secondary);">Loading request details...</p>
+      </div>
+
+      <div id="contentState" style="display: none;">
+        <div class="code-badge-wrap">
+          <div class="code-label">Request Code</div>
+          <div class="code-value" id="dispCode">------</div>
+        </div>
+
+        <div class="info-list">
+          <div class="info-item">
+            <span class="info-title">Drive Name</span>
+            <span class="info-data" id="dispDriveLabel">-</span>
+          </div>
+          <div class="info-item">
+            <span class="info-title">Drive Owner</span>
+            <span class="info-data" id="dispOwnerEmail">-</span>
+          </div>
+          <div class="info-item">
+            <span class="info-title">Requester</span>
+            <span class="info-data" id="dispRequesterEmail">-</span>
+          </div>
+          <div class="info-item">
+            <span class="info-title">Device ID</span>
+            <span class="info-data" id="dispFingerprint">-</span>
+          </div>
+          <div class="info-item">
+            <span class="info-title">Status</span>
+            <span class="info-data">
+              <span class="status-pill status-pending" id="dispStatus">PENDING</span>
+            </span>
+          </div>
+        </div>
+
+        <!-- Owner Auth Section if not logged in -->
+        <div id="authSection" class="auth-section" style="display: none;">
+          <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 8px;">Confirm your owner email to approve:</p>
+          <input type="email" id="ownerEmailInput" class="input-field" placeholder="Owner email (e.g. owner@gmail.com)">
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="actions-grid" id="actionButtons">
+          <button class="btn btn-primary" onclick="submitDecision('ONE_TIME')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            Approve 1-Time (12 Hours)
+          </button>
+          
+          <button class="btn btn-secondary" onclick="submitDecision('CUSTOM_LEASE', 24)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            Approve 24-Hour Lease
+          </button>
+
+          <button class="btn btn-secondary" onclick="submitDecision('CUSTOM_LEASE', 168)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            Approve 7-Day Lease
+          </button>
+
+          <button class="btn btn-forever" onclick="submitDecision('FOREVER')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            Trust Forever (Permanent)
+          </button>
+
+          <button class="btn btn-danger" onclick="submitDecision('DENY')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            Deny Access
+          </button>
+        </div>
+      </div>
+
+      <!-- Result state -->
+      <div id="resultState" style="display: none;"></div>
+    </div>
+
+    <div class="footer">
+      USB Killswitch v2 &bull; End-to-End Cryptographic Access Control
+    </div>
+  </div>
+
+  <script>
+    let currentRequestId = '';
+    let requestData = null;
+
+    // Extract request ID from URL path or query params
+    function getRequestId() {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('req')) return params.get('req').trim().toUpperCase();
+      if (params.get('id')) return params.get('id').trim().toUpperCase();
+      
+      const pathParts = window.location.pathname.split('/').filter(Boolean);
+      if (pathParts.length >= 2 && pathParts[0] === 'approve') {
+        return pathParts[1].trim().toUpperCase();
+      }
+      return '';
+    }
+
+    async function checkOwnerAuth() {
+      try {
+        const res = await fetch('/api/owner/me');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.authenticated && data.owner_email) {
+            document.getElementById('ownerEmailInput').value = data.owner_email;
+            return data.owner_email;
+          }
+        }
+      } catch (e) {}
+      return null;
+    }
+
+    async function loadRequest() {
+      currentRequestId = getRequestId();
+      if (!currentRequestId) {
+        showError("Invalid or missing request code in URL.");
+        return;
+      }
+
+      document.getElementById('dispCode').innerText = currentRequestId;
+
+      try {
+        const res = await fetch(`/api/request-info/${currentRequestId}`);
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          showError(err.error || "Request not found or expired.");
+          return;
+        }
+
+        requestData = await res.json();
+        const currentAuthUser = await checkOwnerAuth();
+        renderRequest(requestData, currentAuthUser);
+
+      } catch (err) {
+        showError("Failed to connect to server: " + err.message);
+      }
+    }
+
+    function renderRequest(req, currentAuthUser) {
+      document.getElementById('dispDriveLabel').innerText = req.drive_label || 'USB Drive';
+      document.getElementById('dispOwnerEmail').innerText = req.owner_email || '-';
+      document.getElementById('dispRequesterEmail').innerText = req.requester_email || 'Unknown';
+      document.getElementById('dispFingerprint').innerText = req.fingerprint_preview || '-';
+      
+      const statusPill = document.getElementById('dispStatus');
+      statusPill.innerText = req.status;
+      statusPill.className = 'status-pill status-' + req.status.toLowerCase();
+
+      const isOwner = currentAuthUser && currentAuthUser.toLowerCase() === (req.owner_email || '').toLowerCase();
+      const isGuest = currentAuthUser && !isOwner;
+
+      if (req.status !== 'PENDING') {
+        document.getElementById('actionButtons').style.display = 'none';
+        document.getElementById('authSection').style.display = 'none';
+      } else if (isGuest) {
+        // Logged in as guest / requester
+        document.getElementById('actionButtons').style.display = 'none';
+        document.getElementById('authSection').style.display = 'block';
+        document.getElementById('authSection').innerHTML = `
+          <div style="background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 12px; padding: 14px; text-align: center;">
+            <div style="font-size: 20px; margin-bottom: 6px;">📨</div>
+            <div style="font-size: 13px; font-weight: 600; color: #818cf8; margin-bottom: 4px;">Request Sent to Owner</div>
+            <div style="font-size: 12px; color: var(--text-secondary); line-height: 1.4;">
+              Signed in as <strong>${currentAuthUser}</strong>.<br>
+              Waiting for drive owner (<strong>${req.owner_email}</strong>) to approve your device access.
+            </div>
+            <div style="margin-top: 10px; font-size: 11px; color: var(--text-muted);">
+              Your desktop client will unlock automatically once approved.
+            </div>
+          </div>
+        `;
+      } else if (!isOwner) {
+        // Not authenticated yet
+        document.getElementById('authSection').style.display = 'block';
+        if (req.owner_email) {
+          document.getElementById('ownerEmailInput').placeholder = `e.g. ${req.owner_email}`;
+        }
+      } else {
+        // Authenticated as owner
+        document.getElementById('authSection').style.display = 'none';
+      }
+
+      document.getElementById('loadingState').style.display = 'none';
+      document.getElementById('contentState').style.display = 'block';
+    }
+
+    async function submitDecision(action, hours) {
+      const emailInput = document.getElementById('ownerEmailInput');
+      const ownerEmail = emailInput ? emailInput.value.trim() : '';
+
+      setButtonsLoading(true);
+
+      try {
+        let endpoint = action === 'DENY' ? '/api/deny-quick' : '/api/approve-quick';
+        let body = {
+          request_id: currentRequestId,
+          owner_email: ownerEmail
+        };
+
+        if (action !== 'DENY') {
+          body.scope = action;
+          if (hours) body.lease_hours = hours;
+        }
+
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          alert(data.error || "Action failed.");
+          setButtonsLoading(false);
+          return;
+        }
+
+        showSuccess(action === 'DENY' ? 'Request Denied' : 'Access Approved!', 
+                    action === 'DENY' ? 'The user will be denied access to the drive.' : `Granted scope: ${action} (${hours ? hours + 'h' : 'Permanent/12h'})`);
+
+      } catch (err) {
+        alert("Network error: " + err.message);
+        setButtonsLoading(false);
+      }
+    }
+
+    function setButtonsLoading(isLoading) {
+      const buttons = document.querySelectorAll('.actions-grid button');
+      buttons.forEach(b => b.disabled = isLoading);
+    }
+
+    function showSuccess(title, message) {
+      document.getElementById('contentState').style.display = 'none';
+      const result = document.getElementById('resultState');
+      result.style.display = 'block';
+      result.innerHTML = `
+        <div class="feedback-overlay">
+          <div class="feedback-icon feedback-success">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+          <div class="feedback-title">${title}</div>
+          <div class="feedback-msg">${message}</div>
+          <p style="font-size: 12px; color: var(--text-muted); margin-top: 20px;">You can safely close this window.</p>
+        </div>
+      `;
+    }
+
+    function showError(message) {
+      document.getElementById('loadingState').style.display = 'none';
+      document.getElementById('contentState').style.display = 'none';
+      const result = document.getElementById('resultState');
+      result.style.display = 'block';
+      result.innerHTML = `
+        <div class="feedback-overlay">
+          <div class="feedback-icon feedback-error">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </div>
+          <div class="feedback-title">Request Error</div>
+          <div class="feedback-msg">${message}</div>
+        </div>
+      `;
+    }
+
+    window.onload = loadRequest;
+  </script>
+</body>
+</html>

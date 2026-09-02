@@ -12,3 +12,8 @@ PyJWT>=2.8.0
 
 # Modern desktop GUI framework (dark mode, widgets)
 customtkinter>=5.2.0
+
+# QR code generation for mobile approvals
+qrcode>=7.4.2
+Pillow>=10.0.0
+

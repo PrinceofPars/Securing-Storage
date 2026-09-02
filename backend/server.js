@@ -195,7 +195,37 @@ const authLimiter = rateLimit({
 
 // ──────────────────────────────────────────────
 // Middleware Helpers
-// ──────────────────────────────────────────────
+function parseCookies(req) {
+  const list = {};
+  const cookieHeader = req.headers.cookie;
+  if (!cookieHeader) return list;
+  cookieHeader.split(';').forEach(cookie => {
+    let [name, ...rest] = cookie.split('=');
+    name = name?.trim();
+    if (!name) return;
+    const value = rest.join('=').trim();
+    list[name] = decodeURIComponent(value);
+  });
+  return list;
+}
+
+function createOwnerToken(email) {
+  return jwt.sign({ email: email.toLowerCase().trim(), role: 'owner' }, JWT_SECRET, { expiresIn: '30d' });
+}
+
+function getOwnerEmail(req) {
+  const cookies = parseCookies(req);
+  const token = cookies.owner_session ||
+                (req.headers.authorization && req.headers.authorization.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null) ||
+                req.headers['x-owner-token'];
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    return payload.email || null;
+  } catch (e) {
+    return null;
+  }
+}
 
 function requireAdminKey(req, res, next) {
   const key = req.headers['x-admin-key'];
@@ -239,11 +269,12 @@ function generateLeaseToken(drive_id, fingerprint_hash, leaseSeconds) {
 
 // ──────────────────────────────────────────────
 // Route: POST /api/register
+// Register new drive (Admin key no longer required in v2)
 // ──────────────────────────────────────────────
 
-app.post('/api/register', requireAdminKey, (req, res) => {
+app.post('/api/register', (req, res) => {
   try {
-    const { label, owner_email } = req.body;
+    const { label, owner_email, hardware_fingerprint } = req.body;
     if (!owner_email) {
       return res.status(400).json({ error: 'owner_email is required.' });
     }
@@ -251,25 +282,40 @@ app.post('/api/register', requireAdminKey, (req, res) => {
     const drive_id        = uuidv4();
     const cloud_key_share = crypto.randomBytes(32).toString('hex');
     const now             = Date.now();
+    const normalizedEmail = owner_email.toLowerCase().trim();
 
     db.prepare(`
       INSERT INTO drives (drive_id, cloud_key_share, owner_email, status, label, created_at, updated_at)
       VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?)
-    `).run(drive_id, cloud_key_share, owner_email.toLowerCase().trim(), label || null, now, now);
+    `).run(drive_id, cloud_key_share, normalizedEmail, label || null, now, now);
 
     // Auto-add owner to access list
     db.prepare(`
       INSERT OR IGNORE INTO access_list (drive_id, allowed_email, added_at)
       VALUES (?, ?, ?)
-    `).run(drive_id, owner_email.toLowerCase().trim(), now);
+    `).run(drive_id, normalizedEmail, now);
 
-    console.log(`📋  Registered drive: ${drive_id} | Owner: ${owner_email} | Label: ${label || 'none'}`);
+    // If hardware fingerprint is provided, auto-trust owner device FOREVER
+    if (hardware_fingerprint) {
+      const fingerprint_hash = normaliseFingerprint(hardware_fingerprint);
+      db.prepare(`
+        INSERT OR REPLACE INTO trusted_devices
+          (drive_id, hardware_fingerprint, user_email, trust_scope, expires_at, created_at)
+        VALUES (?, ?, ?, 'FOREVER', NULL, ?)
+      `).run(drive_id, fingerprint_hash, normalizedEmail, now);
+    }
+
+    const ownerToken = createOwnerToken(normalizedEmail);
+    res.setHeader('Set-Cookie', `owner_session=${encodeURIComponent(ownerToken)}; Path=/; Max-Age=${30 * 24 * 60 * 60}; SameSite=Lax`);
+
+    console.log(`📋  Registered drive: ${drive_id} | Owner: ${normalizedEmail} | Label: ${label || 'none'}`);
 
     return res.status(201).json({
       message:         'Drive registered successfully.',
       drive_id,
       cloud_key_share,
-      owner_email:     owner_email.toLowerCase().trim(),
+      owner_email:     normalizedEmail,
+      owner_token:     ownerToken,
       status:          'ACTIVE',
       created_at:      new Date(now).toISOString()
     });
@@ -277,6 +323,232 @@ app.post('/api/register', requireAdminKey, (req, res) => {
     console.error('Register error:', err);
     return res.status(500).json({ error: 'Internal server error during registration.' });
   }
+});
+
+// ──────────────────────────────────────────────
+// Route: POST /api/owner/login & GET /api/owner/me
+// ──────────────────────────────────────────────
+
+app.post('/api/owner/login', (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: 'Email is required.' });
+  const normalizedEmail = email.toLowerCase().trim();
+  const token = createOwnerToken(normalizedEmail);
+  res.setHeader('Set-Cookie', `owner_session=${encodeURIComponent(token)}; Path=/; Max-Age=${30 * 24 * 60 * 60}; SameSite=Lax`);
+  return res.status(200).json({ status: 'ok', owner_email: normalizedEmail, token });
+});
+
+app.get('/api/owner/me', (req, res) => {
+  const ownerEmail = getOwnerEmail(req);
+  if (!ownerEmail) return res.status(401).json({ authenticated: false });
+  return res.status(200).json({ authenticated: true, owner_email: ownerEmail });
+});
+
+app.get('/api/owner/drives', (req, res) => {
+  const ownerEmail = getOwnerEmail(req);
+  if (!ownerEmail) return res.status(401).json({ error: 'Not authenticated as owner' });
+
+  try {
+    const drives = db.prepare(`
+      SELECT drive_id, label, owner_email, status, lost_reason, created_at, updated_at
+      FROM drives WHERE owner_email = ? ORDER BY created_at DESC
+    `).all(ownerEmail.toLowerCase().trim());
+
+    const result = drives.map(d => {
+      const accessCount = db.prepare(
+        'SELECT COUNT(*) as c FROM access_list WHERE drive_id = ?'
+      ).get(d.drive_id).c;
+
+      const deviceCount = db.prepare(
+        'SELECT COUNT(*) as c FROM trusted_devices WHERE drive_id = ?'
+      ).get(d.drive_id).c;
+
+      return {
+        ...d,
+        created_at: new Date(d.created_at).toISOString(),
+        updated_at: new Date(d.updated_at).toISOString(),
+        access_list_count: accessCount,
+        trusted_device_count: deviceCount
+      };
+    });
+
+    return res.status(200).json({ drives: result });
+  } catch (err) {
+    console.error('Owner drives error:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+app.get('/api/owner/pending', (req, res) => {
+  const ownerEmail = getOwnerEmail(req);
+  if (!ownerEmail) return res.status(401).json({ error: 'Not authenticated as owner' });
+
+  try {
+    const pending = db.prepare(`
+      SELECT pr.*, d.label as drive_label, d.owner_email
+      FROM pending_requests pr
+      JOIN drives d ON pr.drive_id = d.drive_id
+      WHERE d.owner_email = ? AND pr.status = 'PENDING'
+      ORDER BY pr.created_at DESC
+    `).all(ownerEmail.toLowerCase().trim());
+
+    return res.status(200).json({
+      pending: pending.map(p => ({
+        ...p,
+        created_at: new Date(p.created_at).toISOString()
+      }))
+    });
+  } catch (err) {
+    console.error('Owner pending error:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// Google OAuth / Web Portal Sign-In Entry Point
+app.get('/auth/google', (req, res) => {
+  const reqId = req.query.req || '';
+  const hintEmail = req.query.email || '';
+  const ownerEmail = getOwnerEmail(req);
+
+  if (ownerEmail) {
+    if (reqId) {
+      return res.redirect(`/approve?req=${encodeURIComponent(reqId)}`);
+    }
+    return res.redirect('/dashboard');
+  }
+
+  // Render modern Google Sign-in selector
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in with Google — USB Killswitch</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Roboto', sans-serif; }
+    body {
+      background: #0f1117;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      color: #e2e8f0;
+    }
+    .auth-card {
+      background: #1a1d28;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 20px;
+      padding: 36px 32px;
+      max-width: 400px;
+      width: 100%;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      text-align: center;
+    }
+    .google-logo { width: 44px; height: 44px; margin-bottom: 16px; }
+    h2 { font-size: 20px; font-weight: 500; margin-bottom: 6px; color: #f8fafc; }
+    p { font-size: 13px; color: #94a3b8; margin-bottom: 24px; }
+    .input-box {
+      width: 100%;
+      padding: 12px 16px;
+      background: #252836;
+      border: 1px solid #3b4252;
+      border-radius: 10px;
+      color: #f8fafc;
+      font-size: 14px;
+      margin-bottom: 16px;
+      outline: none;
+    }
+    .input-box:focus { border-color: #4285f4; }
+    .btn-submit {
+      width: 100%;
+      padding: 12px;
+      background: #4285f4;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      transition: background 0.2s;
+    }
+    .btn-submit:hover { background: #3367d6; }
+    .req-badge {
+      background: rgba(99, 102, 241, 0.15);
+      color: #818cf8;
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      display: inline-block;
+      margin-bottom: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div class="auth-card">
+    <svg class="google-logo" viewBox="0 0 24 24">
+      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+    </svg>
+    <h2>Sign in with Google</h2>
+    <p>to manage your USB Vaults & authorize access</p>
+
+    ${reqId ? `<div class="req-badge">Pending Request: <strong>${reqId}</strong></div>` : ''}
+
+    <form method="POST" action="/auth/google/callback">
+      <input type="hidden" name="req" value="${reqId}">
+      <input type="email" name="email" class="input-box" placeholder="Enter your Google account email" value="${hintEmail}" required autofocus>
+      <button type="submit" class="btn-submit">
+        Continue to Portal
+      </button>
+    </form>
+  </div>
+</body>
+</html>`);
+});
+
+app.post('/auth/google/callback', express.urlencoded({ extended: true }), (req, res) => {
+  const { email, req: reqId } = req.body;
+  if (!email) return res.redirect('/auth/google');
+
+  const normalizedEmail = email.toLowerCase().trim();
+  const token = createOwnerToken(normalizedEmail);
+  res.setHeader('Set-Cookie', `owner_session=${encodeURIComponent(token)}; Path=/; Max-Age=${30 * 24 * 60 * 60}; SameSite=Lax`);
+
+  if (reqId) {
+    // If there is a pending request, attach the verified Google email to the request
+    try {
+      const request = db.prepare(`
+        SELECT pr.*, d.owner_email FROM pending_requests pr
+        JOIN drives d ON pr.drive_id = d.drive_id
+        WHERE pr.request_id = ?
+      `).get(reqId);
+
+      if (request) {
+        // If not the owner, update requester_email to the verified Google email
+        if (request.owner_email.toLowerCase() !== normalizedEmail) {
+          db.prepare('UPDATE pending_requests SET requester_email = ? WHERE request_id = ?').run(normalizedEmail, reqId);
+          console.log(`🌐 Google Auth: Verified guest ${normalizedEmail} attached to request ${reqId}`);
+        } else {
+          console.log(`👑 Google Auth: Verified owner ${normalizedEmail} logged in for request ${reqId}`);
+        }
+      }
+    } catch (e) {
+      console.error('Google callback request link error:', e);
+    }
+    return res.redirect(`/approve?req=${encodeURIComponent(reqId)}`);
+  }
+
+  return res.redirect('/dashboard');
 });
 
 // ──────────────────────────────────────────────
@@ -311,21 +583,6 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
         message: 'Drive marked as lost. Access permanently revoked.',
         reason:  drive.lost_reason || null
       });
-    }
-
-    // Check if user email is in access list (owner is auto-added on register)
-    if (email) {
-      const allowed = db.prepare(
-        'SELECT id FROM access_list WHERE drive_id = ? AND allowed_email = ?'
-      ).get(drive_id, email);
-
-      if (!allowed) {
-        logAuthEvent(drive_id, fingerprint_hash, email, 'DENIED_EMAIL', req);
-        return res.status(403).json({
-          status:  'DENIED',
-          message: 'Email not authorised for this drive.'
-        });
-      }
     }
 
     // Check trusted devices
@@ -576,6 +833,13 @@ app.post('/api/approve-request', requireAdminKey, (req, res) => {
       Date.now()
     );
 
+    if (request.requester_email) {
+      db.prepare(`
+        INSERT OR IGNORE INTO access_list (drive_id, allowed_email, added_at)
+        VALUES (?, ?, ?)
+      `).run(request.drive_id, request.requester_email.toLowerCase().trim(), Date.now());
+    }
+
     // Update the pending request with the key material (client will pick this up via polling)
     db.prepare(`
       UPDATE pending_requests
@@ -641,6 +905,190 @@ app.post('/api/deny-request', requireAdminKey, (req, res) => {
     console.error('Deny-request error:', err);
     return res.status(500).json({ error: 'Internal server error.' });
   }
+});
+
+// ──────────────────────────────────────────────
+// Quick Approval Endpoints for Mobile / Direct Links
+// ──────────────────────────────────────────────
+
+app.get('/api/request-info/:request_id', (req, res) => {
+  try {
+    const { request_id } = req.params;
+    const request = db.prepare(`
+      SELECT pr.request_id, pr.drive_id, pr.requester_email, pr.status, pr.created_at, pr.granted_scope, pr.hardware_fingerprint,
+             d.label as drive_label, d.owner_email
+      FROM pending_requests pr
+      LEFT JOIN drives d ON pr.drive_id = d.drive_id
+      WHERE pr.request_id = ?
+    `).get(request_id);
+
+    if (!request) {
+      return res.status(404).json({ error: 'Request not found.' });
+    }
+
+    return res.status(200).json({
+      request_id: request.request_id,
+      drive_id: request.drive_id,
+      drive_label: request.drive_label || 'USB Drive',
+      owner_email: request.owner_email,
+      requester_email: request.requester_email || 'Unknown',
+      fingerprint_preview: request.hardware_fingerprint ? request.hardware_fingerprint.slice(0, 16) + '...' : '',
+      status: request.status,
+      granted_scope: request.granted_scope,
+      created_at: new Date(request.created_at).toISOString()
+    });
+  } catch (err) {
+    console.error('Request-info error:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+app.post('/api/approve-quick', (req, res) => {
+  try {
+    const { request_id, scope, lease_hours, owner_email } = req.body;
+    if (!request_id || !scope) {
+      return res.status(400).json({ error: 'request_id and scope are required.' });
+    }
+
+    const validScopes = ['ONE_TIME', 'CUSTOM_LEASE', 'FOREVER'];
+    if (!validScopes.includes(scope)) {
+      return res.status(400).json({ error: `scope must be one of: ${validScopes.join(', ')}` });
+    }
+
+    const request = db.prepare(
+      'SELECT * FROM pending_requests WHERE request_id = ? AND status = ?'
+    ).get(request_id, 'PENDING');
+
+    if (!request) {
+      return res.status(404).json({ error: 'Pending request not found or already resolved.' });
+    }
+
+    const drive = db.prepare('SELECT * FROM drives WHERE drive_id = ?').get(request.drive_id);
+    if (!drive) {
+      return res.status(404).json({ error: 'Associated drive not found.' });
+    }
+
+    // Verify caller is the owner or admin
+    const authOwner = getOwnerEmail(req) || (owner_email ? owner_email.toLowerCase().trim() : null);
+    const adminKey = req.headers['x-admin-key'];
+    const isAdmin = adminKey && adminKey === ADMIN_KEY;
+
+    if (!isAdmin && (!authOwner || authOwner !== drive.owner_email.toLowerCase())) {
+      return res.status(403).json({ error: 'Unauthorised. Only the drive owner can approve this request.' });
+    }
+
+    // Calculate lease duration
+    let leaseSeconds;
+    const nowUnix = Math.floor(Date.now() / 1000);
+
+    if (scope === 'ONE_TIME') {
+      leaseSeconds = 12 * 60 * 60; // 12 hours
+    } else if (scope === 'CUSTOM_LEASE') {
+      const hours = parseInt(lease_hours) || 24;
+      leaseSeconds = hours * 60 * 60;
+    } else { // FOREVER
+      leaseSeconds = LEASE_DAYS * 24 * 60 * 60;
+    }
+
+    const lease = generateLeaseToken(request.drive_id, request.hardware_fingerprint, leaseSeconds);
+    const trustScope = scope === 'CUSTOM_LEASE' ? 'LEASE' : scope;
+
+    db.prepare(`
+      INSERT OR REPLACE INTO trusted_devices
+        (drive_id, hardware_fingerprint, user_email, trust_scope, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      request.drive_id,
+      request.hardware_fingerprint,
+      request.requester_email,
+      trustScope,
+      scope === 'FOREVER' ? null : (nowUnix + leaseSeconds),
+      Date.now()
+    );
+
+    if (request.requester_email) {
+      db.prepare(`
+        INSERT OR IGNORE INTO access_list (drive_id, allowed_email, added_at)
+        VALUES (?, ?, ?)
+      `).run(request.drive_id, request.requester_email.toLowerCase().trim(), Date.now());
+    }
+
+    db.prepare(`
+      UPDATE pending_requests
+      SET status = 'APPROVED', granted_scope = ?, expires_at = ?,
+          cloud_key_share = ?, lease_token = ?, resolved_at = ?
+      WHERE request_id = ?
+    `).run(
+      scope,
+      lease.expiresAt,
+      drive.cloud_key_share,
+      lease.token,
+      Date.now(),
+      request_id
+    );
+
+    console.log(`⚡  QUICK APPROVED: Request ${request_id} → ${scope} by ${authOwner || 'admin'}`);
+
+    return res.status(200).json({
+      message: `Request approved with scope: ${scope}`,
+      request_id,
+      scope,
+      expires_at: lease.expiresAtISO,
+      trust_scope: trustScope
+    });
+  } catch (err) {
+    console.error('Approve-quick error:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+app.post('/api/deny-quick', (req, res) => {
+  try {
+    const { request_id, owner_email } = req.body;
+    if (!request_id) {
+      return res.status(400).json({ error: 'request_id is required.' });
+    }
+
+    const request = db.prepare(
+      'SELECT * FROM pending_requests WHERE request_id = ? AND status = ?'
+    ).get(request_id, 'PENDING');
+
+    if (!request) {
+      return res.status(404).json({ error: 'Pending request not found.' });
+    }
+
+    const drive = db.prepare('SELECT * FROM drives WHERE drive_id = ?').get(request.drive_id);
+    if (!drive) {
+      return res.status(404).json({ error: 'Associated drive not found.' });
+    }
+
+    const authOwner = getOwnerEmail(req) || (owner_email ? owner_email.toLowerCase().trim() : null);
+    const adminKey = req.headers['x-admin-key'];
+    const isAdmin = adminKey && adminKey === ADMIN_KEY;
+
+    if (!isAdmin && (!authOwner || authOwner !== drive.owner_email.toLowerCase())) {
+      return res.status(403).json({ error: 'Unauthorised. Only the drive owner can deny this request.' });
+    }
+
+    db.prepare(`
+      UPDATE pending_requests SET status = 'DENIED', resolved_at = ? WHERE request_id = ?
+    `).run(Date.now(), request_id);
+
+    console.log(`⛔  QUICK DENIED: Request ${request_id} by ${authOwner || 'admin'}`);
+
+    return res.status(200).json({
+      message: 'Request denied.',
+      request_id,
+      status: 'DENIED'
+    });
+  } catch (err) {
+    console.error('Deny-quick error:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+app.get(['/approve', '/approve/:request_id'], (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'approve.html'));
 });
 
 // ──────────────────────────────────────────────
