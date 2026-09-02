@@ -103,6 +103,7 @@ graph TB
 | **Instant Remote Killswitch** | One-click emergency lockout from the web dashboard that immediately revokes key delivery worldwide. |
 | **Hardware Fingerprint Binding** | Binds sessions to unique CPU, motherboard, and disk signatures to prevent token cloning. |
 | **Offline Time-Bounded Leases** | Digitally signed cryptographic tokens allow working offline (e.g., in-flight) for defined periods without active internet. |
+| **Encapsulated 2-File Architecture** | Prepend the local key (`K_local`), configuration, and lease token into an authenticated 4 KB header inside `vault.enc` — exactly 2 files exist on the USB: `Zero-Trust.exe` and `vault.enc`. |
 | **Tail-Manifest Vault Format** | Single-file encrypted container (`vault.enc`) with tamper-proof authenticated file manifests. |
 | **Single-File On-Demand Decrypt** | Decrypts only the specific file opened into a temporary RAM workspace, re-encrypts changes, and securely shreds cache upon locking. |
 | **Central Admin Dashboard** | Full web UI for managing drive fleets, access control lists (ACLs), approval queues, and immutable forensic audit logs. |
@@ -170,7 +171,7 @@ python usb_client/gui.py
 1. Launch the Desktop Client.
 2. Sign in with **"Continue with Google"** or enter the **Owner Email** (e.g., `owner@gmail.com`).
 3. Select the folder to protect and click **`🚀 Initialize & Encrypt Drive`**.
-4. The client creates `vault.enc` and registers the drive fingerprint with the backend automatically.
+4. The client creates the encapsulated `vault.enc` container (packing configuration and local key share directly into the encrypted header) and registers the drive fingerprint with the backend automatically. No loose metadata files are written to the USB drive.
 
 ### Step 2: Unlocking on a Trusted Machine
 * On recognized hardware with an active lease, clicking **`Unlock Vault`** grants instant access without approval prompts.

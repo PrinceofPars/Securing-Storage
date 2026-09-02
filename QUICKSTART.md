@@ -22,9 +22,9 @@ A Zero-Trust, Remote-Killable Encrypted USB Drive System featuring Split-Key AES
    ┌───────────────────▼───────────────┴────────────────────┐
    │                  2. DESKTOP CLIENT (GUI)               │
    │           CustomTkinter + Crypto Engine v2             │
-   │                                                        │
-   │  • Portable Standalone EXE: USB_Killswitch.exe         │
-   │  • Local Key Share (K_local) + Hardware Fingerprint    │
+   │  • Portable Standalone EXE: Zero-Trust.exe             │
+   │  • Encapsulated 2-File Architecture: Zero-Trust.exe & vault.enc │
+   │  • Header Packing: K_local, config, and lease inside vault.enc │
    │  • Tail-Manifest Vault (vault.enc)                     │
    │  • On-Demand Decryption & Incremental Lock & Save      │
    └────────────────────────────────────────────────────────┘
@@ -157,9 +157,9 @@ Designed with a dark glassmorphism mobile UI for smartphone screens.
 
 ### Step B: Unlocking on Owner's Registered Computer
 
-1. Open `USB_Killswitch.exe`.
+1. Open `Zero-Trust.exe` (or `USB_Killswitch.exe`).
 2. Click **`Unlock Vault`**.
-3. **Result**: Unlocks instantly via auto-trusted hardware fingerprint binding (or local `lease.tok` if offline).
+3. **Result**: Unlocks instantly via auto-trusted hardware fingerprint binding (or offline lease token encapsulated directly in `vault.enc` header).
 
 ---
 
@@ -257,6 +257,6 @@ node test_all_advanced_scenarios.js
 | **`backend/public/index.html`** | Web Admin & Owner Management Dashboard |
 | **`backend/public/approve.html`** | Mobile Glassmorphism Device Approval Portal |
 | **`usb_client/gui.py`** | Modern CustomTkinter Desktop Client source code |
-| **`usb_client/crypto_engine.py`** | Tail-Manifest AES-256-GCM Cryptographic Engine (`USBVLT02`) |
-| **`usb_client/lease_manager.py`** | Offline Hardware-Bound Lease Manager (`lease.tok`) |
+| **`usb_client/crypto_engine.py`** | Encapsulated AES-256-GCM Cryptographic Engine (`USBVLT03` with 4KB header packing) |
+| **`usb_client/lease_manager.py`** | Offline Hardware-Bound Lease Manager (Header encapsulated into `vault.enc`) |
 | **`usb_client/fingerprint.py`** | Hardware Fingerprinting Module |

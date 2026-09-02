@@ -118,14 +118,46 @@ COLORS = {
 # ──────────────────────────────────────────────────────────────────────────────
 
 def load_config() -> Optional[dict]:
-    if not CONFIG_FILE.exists():
-        return None
-    try:
-        return json.loads(CONFIG_FILE.read_text(encoding='utf-8'))
-    except Exception:
-        return None
+    # Check encapsulated vault header first
+    if VAULT_FILE.exists():
+        try:
+            hdr = ce.read_vault_header(VAULT_FILE)
+            if hdr and hdr.get('config'):
+                return hdr['config']
+        except Exception:
+            pass
+    # Fallback to legacy loose config.json
+    if CONFIG_FILE.exists():
+        try:
+            return json.loads(CONFIG_FILE.read_text(encoding='utf-8'))
+        except Exception:
+            pass
+    return None
+
+def load_local_key() -> Optional[bytes]:
+    """Retrieve local key share from encapsulated vault header or fallback file."""
+    if VAULT_FILE.exists():
+        try:
+            hdr = ce.read_vault_header(VAULT_FILE)
+            if hdr and hdr.get('k_local'):
+                return hdr['k_local']
+        except Exception:
+            pass
+    if LOCAL_KEY_FILE.exists():
+        try:
+            return ce.load_local_key(LOCAL_KEY_FILE)
+        except Exception:
+            pass
+    return None
 
 def save_config(config: dict):
+    # If vault exists and is v3 encapsulated, update header in-place
+    if VAULT_FILE.exists():
+        try:
+            ce.update_vault_header(VAULT_FILE, config=config)
+            return
+        except Exception:
+            pass
     CONFIG_FILE.write_text(json.dumps(config, indent=2), encoding='utf-8')
 
 def generate_qr_ctk_image(data_str: str, size: int = 170) -> ctk.CTkImage:
@@ -177,8 +209,17 @@ class USBKillswitchApp(ctk.CTk):
         self._timer_id    = None
 
         # Route initial screen
-        config = load_config()
-        if config and LOCAL_KEY_FILE.exists() and VAULT_FILE.exists():
+        v_exists = VAULT_FILE.exists()
+        hdr = None
+        if v_exists:
+            try:
+                hdr = ce.read_vault_header(VAULT_FILE)
+            except Exception:
+                pass
+
+        if hdr and hdr.get('config') and hdr.get('k_local'):
+            self._show_unlock_screen()
+        elif load_config() and load_local_key() and v_exists:
             self._show_unlock_screen()
         else:
             self._show_init_screen()
@@ -341,11 +382,16 @@ class USBKillswitchApp(ctk.CTk):
         self.init_google_btn.configure(text=f"  Signed In as {email}", fg_color="#e2e8f0")
 
     def _open_existing_vault(self):
-        path = filedialog.askdirectory(title="Select directory containing vault.enc and config.json")
+        path = filedialog.askdirectory(title="Select directory containing vault.enc")
         if path:
             set_base_dir(Path(path))
-            config = load_config()
-            if config and LOCAL_KEY_FILE.exists() and VAULT_FILE.exists():
+            hdr = None
+            if VAULT_FILE.exists():
+                try:
+                    hdr = ce.read_vault_header(VAULT_FILE)
+                except Exception:
+                    pass
+            if (hdr and hdr.get('config') and hdr.get('k_local')) or (load_config() and load_local_key() and VAULT_FILE.exists()):
                 self._show_unlock_screen()
             else:
                 messagebox.showerror("Error", f"No valid vault found in {path}")
@@ -405,23 +451,21 @@ class USBKillswitchApp(ctk.CTk):
                 drive_id      = data['drive_id']
                 cloud_key_hex = data['cloud_key_share']
 
-                # Generate and save local key share
+                # Generate local key share (stored directly inside vault.enc header)
                 k_local = ce.generate_local_key()
-                ce.save_local_key(k_local, LOCAL_KEY_FILE)
 
-                # Save config
+                # Build config
                 config = {
                     'drive_id':    drive_id,
                     'label':       label,
                     'api_url':     api_url,
                     'owner_email': email,
                     'created_at':  int(time.time()),
-                    'version':     2
+                    'version':     3
                 }
-                save_config(config)
 
                 self.after(0, lambda: self.init_status.configure(
-                    text="Encrypting folder into tail-manifest vault...",
+                    text="Encrypting folder into encapsulated vault...",
                     text_color=COLORS['warning']))
 
                 def encrypt_cb(current, total, filename):
@@ -431,9 +475,18 @@ class USBKillswitchApp(ctk.CTk):
                 k_cloud_bytes = ce.hex_to_key_bytes(cloud_key_hex)
                 stats = ce.encrypt_folder_to_vault(
                     Path(folder), VAULT_FILE, k_local, k_cloud_bytes,
+                    config=config,
                     drive_metadata={'label': label, 'owner_email': email, 'created_at': int(time.time())},
                     progress_callback=encrypt_cb
                 )
+
+                # Clean up any leftover metadata files so only Zero-Trust.exe and vault.enc exist
+                for loose_file in (CONFIG_FILE, LOCAL_KEY_FILE, LEASE_FILE):
+                    try:
+                        if loose_file.exists():
+                            loose_file.unlink()
+                    except Exception:
+                        pass
 
                 if self.wipe_var.get():
                     def wipe_cb(current, total, filename):
@@ -445,8 +498,8 @@ class USBKillswitchApp(ctk.CTk):
                     wiped = ce.secure_wipe_temp(Path(folder), progress_callback=wipe_cb)
                     logger.info(f"Wiped {wiped} original files from source folder.")
 
-                # Initial auth
-                lm.authenticate(api_url, drive_id, fp, email, k_local, LEASE_FILE)
+                # Initial auth (stores lease token directly in vault.enc header)
+                lm.authenticate(api_url, drive_id, fp, email, k_local, lease_path=LEASE_FILE, vault_path=VAULT_FILE)
 
                 files_count = stats['files_encrypted']
                 self.after(0, lambda: self._init_complete(files_count, drive_id))
@@ -547,15 +600,16 @@ class USBKillswitchApp(ctk.CTk):
         meta = ce.inspect_vault_header(VAULT_FILE)
         if meta and meta.get('valid'):
             v_size_mb = meta.get('vault_size', 0) / (1024 * 1024)
-            vault_info = f"Vault v{meta.get('version', 2)} format ({v_size_mb:.2f} MB)"
+            enc_tag = " (Encapsulated Header)" if meta.get('encapsulated') else ""
+            vault_info = f"Vault v{meta.get('version', 3)} format{enc_tag} ({v_size_mb:.2f} MB)"
             ctk.CTkLabel(inner, text=vault_info,
                          font=ctk.CTkFont(size=11),
                          text_color=COLORS['text_dim']).pack(anchor="w", pady=(0, 4))
 
-        if config and LOCAL_KEY_FILE.exists():
+        k_local = load_local_key()
+        if config and k_local:
             try:
-                k_local = ce.load_local_key(LOCAL_KEY_FILE)
-                info = lm.get_lease_info(LEASE_FILE, k_local, config.get('drive_id', ''))
+                info = lm.get_lease_info(LEASE_FILE, k_local, config.get('drive_id', ''), vault_path=VAULT_FILE)
                 if info and not info['is_expired']:
                     lease_text = f"Offline lease active: {info['days_left']}d {info['hours_left']}h remaining"
                     ctk.CTkLabel(inner, text=lease_text,
@@ -610,13 +664,19 @@ class USBKillswitchApp(ctk.CTk):
 
         def do_auth():
             try:
-                k_local  = ce.load_local_key(LOCAL_KEY_FILE)
+                k_local  = load_local_key()
+                if not k_local:
+                    self.after(0, lambda: self.unlock_status.configure(
+                        text="Local key share missing from vault header.", text_color=COLORS['danger']))
+                    return
+
                 fp       = self._current_fingerprint
                 api_url  = config.get('api_url', DEFAULT_API)
                 drive_id = config['drive_id']
 
                 result, cks, msg, was_online, request_id = lm.authenticate(
-                    api_url, drive_id, fp, email, k_local, LEASE_FILE
+                    api_url, drive_id, fp, email, k_local,
+                    lease_path=LEASE_FILE, vault_path=VAULT_FILE
                 )
 
                 if result in ('GRANTED', 'OFFLINE_GRANTED'):
@@ -663,6 +723,23 @@ class USBKillswitchApp(ctk.CTk):
             try:
                 k_cloud = ce.hex_to_key_bytes(cloud_key_hex)
                 manifest = ce.read_vault_manifest(VAULT_FILE, k_local, k_cloud)
+
+                # Auto-migrate legacy v2 vaults or loose metadata files to encapsulated v3!
+                vmeta = ce.inspect_vault_header(VAULT_FILE)
+                if (vmeta and not vmeta.get('encapsulated')) or (CONFIG_FILE.exists() or LOCAL_KEY_FILE.exists()):
+                    try:
+                        cfg = load_config() or {'drive_id': manifest.get('drive_metadata', {}).get('drive_id', '')}
+                        lease_info = lm.load_lease_token(LEASE_FILE, k_local, cfg.get('drive_id', ''))
+                        ce.migrate_v2_to_v3(VAULT_FILE, k_local, k_cloud, cfg, lease_data=lease_info)
+                        for f in (CONFIG_FILE, LOCAL_KEY_FILE, LEASE_FILE):
+                            if f.exists():
+                                try:
+                                    f.unlink()
+                                except Exception:
+                                    pass
+                        logger.info("Auto-migrated legacy vault to v3 encapsulated vault; removed loose files.")
+                    except Exception as me:
+                        logger.warning(f"Auto-migration skipped: {me}")
 
                 # Initialize unified working directory for current session
                 work_dir = Path(tempfile.mkdtemp(prefix='zerotrust_session_'))
@@ -842,7 +919,8 @@ class USBKillswitchApp(ctk.CTk):
                 try:
                     result, cks, msg = lm.poll_request_status(
                         api_url, request_id, drive_id,
-                        fingerprint, email, k_local, LEASE_FILE
+                        fingerprint, email, k_local,
+                        lease_path=LEASE_FILE, vault_path=VAULT_FILE
                     )
 
                     if result == 'APPROVED':

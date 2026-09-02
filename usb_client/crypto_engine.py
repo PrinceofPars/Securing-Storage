@@ -55,21 +55,211 @@ logger = logging.getLogger(__name__)
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-VAULT_MAGIC_V2  = b'USBVLT02'   # 8 bytes — v2 vault identifier
+VAULT_MAGIC_V3  = b'USBVLT03'   # 8 bytes — v3 encapsulated vault identifier (packed header)
+VAULT_MAGIC_V2  = b'USBVLT02'   # 8 bytes — v2 vault identifier (tail-manifest, loose metadata)
 VAULT_MAGIC_V1  = b'USBVLT01'   # 8 bytes — v1 (legacy, read-only support)
 NONCE_SIZE      = 12             # GCM standard nonce (bytes)
 TAG_SIZE        = 16             # GCM authentication tag (bytes)
 KEY_SIZE        = 32             # AES-256 key size (bytes)
-SALT_SIZE       = 32             # HKDF salt size (bytes) — increased from v1's 16
-HEADER_SIZE     = 8 + 32 + 8    # magic + salt + manifest_offset = 48 bytes
-DATA_START      = HEADER_SIZE    # Payload data begins immediately after header
+SALT_SIZE       = 32             # HKDF salt size (bytes)
+HEADER_BLOCK_SIZE = 4096        # Fixed 4 KB sector-aligned header block for v3
+HEADER_SIZE_V2  = 8 + 32 + 8    # magic + salt + manifest_offset = 48 bytes
+HEADER_SIZE     = HEADER_SIZE_V2
+DATA_START      = HEADER_SIZE
 
 LOCAL_KEY_FILENAME = 'local_key.bin'
 
+# Encapsulated Header Key Derivation Constants
+HEADER_KDF_SECRET = b'ZeroTrustStorageVaultHeaderV3-AuthKey'
+HEADER_KDF_SALT   = b'ZeroTrustStorageV3HeaderSalt'
+HEADER_KDF_INFO   = b'usb-vault-header-v3-aes256'
+HEADER_AAD        = b'USBVLT03-HEADER'
+
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Key Management
+# Header & Key Management
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _derive_header_key() -> bytes:
+    """Derive the AES-256 key used to encrypt/decrypt the encapsulated v3 header."""
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=KEY_SIZE,
+        salt=HEADER_KDF_SALT,
+        info=HEADER_KDF_INFO,
+        backend=default_backend()
+    )
+    return hkdf.derive(HEADER_KDF_SECRET)
+
+
+def pack_vault_header(
+    config: dict,
+    k_local: bytes,
+    lease_data: Optional[dict] = None
+) -> bytes:
+    """
+    Serialize and encrypt config, k_local, and optional lease_data into a 4096-byte header block.
+
+    Wire Layout (4096 bytes):
+      0..7:       Magic header: b"USBVLT03" (8 bytes)
+      8..11:      Header version: uint32 LE (4 bytes = 3)
+      12..23:     Header AES-GCM Nonce (12 bytes)
+      24..39:     Header AES-GCM Tag (16 bytes)
+      40..43:     Header Ciphertext Length (4 bytes, uint32 LE)
+      44..43+L:   Header Ciphertext (AES-256-GCM encrypted JSON)
+      44+L..4095: Zero padding to 4096 bytes
+    """
+    payload = {
+        'config': config,
+        'k_local': k_local.hex(),
+        'lease': lease_data
+    }
+    payload_json = json.dumps(payload, separators=(',', ':')).encode('utf-8')
+
+    header_key = _derive_header_key()
+    aesgcm = AESGCM(header_key)
+    nonce = secrets.token_bytes(NONCE_SIZE)
+    ct_with_tag = aesgcm.encrypt(nonce, payload_json, HEADER_AAD)
+    actual_ct = ct_with_tag[:-TAG_SIZE]
+    tag = ct_with_tag[-TAG_SIZE:]
+
+    ct_len = len(actual_ct)
+    max_payload = HEADER_BLOCK_SIZE - 44
+    if ct_len > max_payload:
+        raise ValueError(f"Header payload too large ({ct_len} bytes, max {max_payload})")
+
+    buf = bytearray(HEADER_BLOCK_SIZE)
+    buf[0:8] = VAULT_MAGIC_V3
+    struct.pack_into('<I', buf, 8, 3)
+    buf[12:24] = nonce
+    buf[24:40] = tag
+    struct.pack_into('<I', buf, 40, ct_len)
+    buf[44:44+ct_len] = actual_ct
+    return bytes(buf)
+
+
+def read_vault_header(vault_path: Path) -> dict:
+    """
+    Read and decrypt the encapsulated metadata header from a v3 vault.
+
+    Returns:
+        dict with:
+          'config': dict,
+          'k_local': bytes,
+          'lease': Optional[dict],
+          'version': int
+    """
+    if not vault_path.exists():
+        raise FileNotFoundError(f"Vault not found: {vault_path}")
+
+    with open(vault_path, 'rb') as vf:
+        header_bytes = vf.read(HEADER_BLOCK_SIZE)
+        if len(header_bytes) < HEADER_BLOCK_SIZE:
+            raise ValueError("Vault file too small to contain a valid v3 header")
+
+    magic = header_bytes[0:8]
+    if magic != VAULT_MAGIC_V3:
+        raise ValueError(f"Not a v3 encapsulated vault (magic: {magic!r})")
+
+    version = struct.unpack_from('<I', header_bytes, 8)[0]
+    nonce = header_bytes[12:24]
+    tag = header_bytes[24:40]
+    ct_len = struct.unpack_from('<I', header_bytes, 40)[0]
+
+    if ct_len > HEADER_BLOCK_SIZE - 44:
+        raise ValueError(f"Invalid header ciphertext length: {ct_len}")
+
+    ciphertext = header_bytes[44:44+ct_len]
+    header_key = _derive_header_key()
+    aesgcm = AESGCM(header_key)
+    ct_with_tag = ciphertext + tag
+    plaintext = aesgcm.decrypt(nonce, ct_with_tag, HEADER_AAD)
+    data = json.loads(plaintext.decode('utf-8'))
+
+    k_local_hex = data.get('k_local')
+    k_local = bytes.fromhex(k_local_hex) if k_local_hex else None
+
+    return {
+        'config': data.get('config', {}),
+        'k_local': k_local,
+        'lease': data.get('lease'),
+        'version': version
+    }
+
+
+def update_vault_header(
+    vault_path: Path,
+    config: Optional[dict] = None,
+    k_local: Optional[bytes] = None,
+    lease_data: Optional[dict] = None,
+    clear_lease: bool = False
+) -> None:
+    """
+    In-place update of the 4096-byte header block in vault.enc.
+    Modifies only the header; does not shift or rewrite payload data.
+    """
+    current = read_vault_header(vault_path)
+    new_config = config if config is not None else current['config']
+    new_k_local = k_local if k_local is not None else current['k_local']
+    if clear_lease:
+        new_lease = None
+    elif lease_data is not None:
+        new_lease = lease_data
+    else:
+        new_lease = current['lease']
+
+    new_header = pack_vault_header(new_config, new_k_local, new_lease)
+    with open(vault_path, 'r+b') as vf:
+        vf.seek(0)
+        vf.write(new_header)
+        vf.flush()
+        os.fsync(vf.fileno())
+    logger.info(f"Encapsulated vault header updated in-place: {vault_path}")
+
+
+class VaultLayout:
+    """Represents the binary offsets of a vault file (v2 or v3)."""
+    def __init__(
+        self,
+        version: int,
+        salt: bytes,
+        manifest_offset: int,
+        manifest_offset_pos: int,
+        data_start: int
+    ):
+        self.version = version
+        self.salt = salt
+        self.manifest_offset = manifest_offset
+        self.manifest_offset_pos = manifest_offset_pos
+        self.data_start = data_start
+
+
+def _get_vault_layout(vf: BinaryIO) -> VaultLayout:
+    """
+    Inspect vault file and resolve layout offsets for v3 (encapsulated) or v2.
+    """
+    vf.seek(0)
+    magic = vf.read(8)
+    if magic == VAULT_MAGIC_V3:
+        # Core data starts after 4096-byte header block
+        vf.seek(HEADER_BLOCK_SIZE)
+        salt = vf.read(SALT_SIZE)
+        manifest_offset_pos = HEADER_BLOCK_SIZE + SALT_SIZE
+        vf.seek(manifest_offset_pos)
+        manifest_offset = struct.unpack('<Q', vf.read(8))[0]
+        data_start = manifest_offset_pos + 8
+        return VaultLayout(3, salt, manifest_offset, manifest_offset_pos, data_start)
+    elif magic == VAULT_MAGIC_V2:
+        salt = vf.read(SALT_SIZE)
+        manifest_offset_pos = 8 + SALT_SIZE
+        manifest_offset = struct.unpack('<Q', vf.read(8))[0]
+        data_start = manifest_offset_pos + 8
+        return VaultLayout(2, salt, manifest_offset, manifest_offset_pos, data_start)
+    elif magic == VAULT_MAGIC_V1:
+        raise ValueError("Legacy v1 vault format cannot be read directly by v3 engine")
+    else:
+        raise ValueError(f"Unrecognized vault magic: {magic!r}")
+
 
 def generate_local_key() -> bytes:
     """Generate a new cryptographically random 256-bit local key share."""
@@ -77,14 +267,14 @@ def generate_local_key() -> bytes:
 
 
 def save_local_key(key_bytes: bytes, key_path: Path) -> None:
-    """Persist the local key share to the USB drive."""
+    """Persist the local key share to the USB drive (legacy support)."""
     key_path.parent.mkdir(parents=True, exist_ok=True)
     key_path.write_bytes(key_bytes)
     logger.info(f"Local key share saved to: {key_path}")
 
 
 def load_local_key(key_path: Path) -> bytes:
-    """Load the local key share from the USB drive."""
+    """Load the local key share from the USB drive (legacy support)."""
     if not key_path.exists():
         raise FileNotFoundError(f"Local key share not found at: {key_path}")
     key_bytes = key_path.read_bytes()
@@ -172,23 +362,25 @@ def encrypt_folder_to_vault(
     vault_path: Path,
     k_local: bytes,
     k_cloud: bytes,
+    config: Optional[dict] = None,
     drive_metadata: Optional[dict] = None,
     progress_callback=None
 ) -> dict:
     """
-    Encrypt an entire folder into a v2 vault.enc file with tail-manifest.
+    Encrypt an entire folder into an encapsulated v3 vault.enc file with packed header.
 
-    Binary layout:
-      [MAGIC 8B][SALT 32B][MANIFEST_OFFSET 8B][...file chunks...][MANIFEST BLOCK]
+    Binary layout (v3):
+      [HEADER BLOCK 4096B][SALT 32B][MANIFEST_OFFSET 8B][...file chunks...][MANIFEST BLOCK]
 
-    Each file chunk is raw AES-GCM ciphertext. The per-file nonce and tag
-    are stored in the manifest (not inline), keeping offset math simple.
+    The 4096-byte header contains the encrypted/authenticated config, K_local share,
+    and optional lease token. File chunks start at offset 4136.
 
     Args:
         source_dir: Folder to encrypt
         vault_path: Output vault.enc path
         k_local: Local key share (32 bytes)
         k_cloud: Cloud key share (32 bytes)
+        config: Optional configuration dict (drive_id, label, api_url, etc.)
         drive_metadata: Optional dict with label, owner_email, etc.
         progress_callback: Optional callable(current, total, rel_path)
 
@@ -205,13 +397,28 @@ def encrypt_folder_to_vault(
     vault_path.parent.mkdir(parents=True, exist_ok=True)
     total_encrypted = 0
 
-    with open(vault_path, 'wb') as vf:
-        # ── Write header with placeholder manifest offset ──
-        vf.write(VAULT_MAGIC_V2)
-        vf.write(salt)
-        vf.write(struct.pack('<Q', 0))  # placeholder, updated after writing manifest
+    cfg = dict(config) if config else {
+        'drive_id': (drive_metadata or {}).get('drive_id', 'unknown'),
+        'label': (drive_metadata or {}).get('label', 'Encrypted USB'),
+        'version': 3,
+        'created_at': int(time.time()),
+        **(drive_metadata or {})
+    }
 
-        # ── Write encrypted file chunks ──
+    header_block = pack_vault_header(cfg, k_local)
+
+    with open(vault_path, 'wb') as vf:
+        # 1. Write encapsulated 4096-byte header
+        vf.write(header_block)
+
+        # 2. Write HKDF salt at offset 4096
+        vf.write(salt)
+
+        # 3. Placeholder manifest offset at offset 4128
+        manifest_offset_pos = vf.tell()
+        vf.write(struct.pack('<Q', 0))
+
+        # 4. Write encrypted file chunks (starts at offset 4136)
         manifest_files = []
         for i, file_path in enumerate(files):
             rel_path = str(file_path.relative_to(source_dir)).replace('\\', '/')
@@ -225,7 +432,6 @@ def encrypt_folder_to_vault(
 
             nonce = secrets.token_bytes(NONCE_SIZE)
             ciphertext_with_tag = aesgcm.encrypt(nonce, plaintext, rel_path.encode('utf-8'))
-            # cryptography lib: ciphertext = actual_ct + tag (last 16 bytes)
             actual_ct = ciphertext_with_tag[:-TAG_SIZE]
             tag = ciphertext_with_tag[-TAG_SIZE:]
 
@@ -244,9 +450,9 @@ def encrypt_folder_to_vault(
             })
             total_encrypted += original_size
 
-        # ── Build and encrypt manifest ──
+        # 5. Build and encrypt manifest at tail
         manifest = {
-            'version': 2,
+            'version': 3,
             'drive_metadata': drive_metadata or {},
             'files': manifest_files,
             'dead_space_bytes': 0,
@@ -256,8 +462,8 @@ def encrypt_folder_to_vault(
         manifest_offset = vf.tell()
         _write_encrypted_manifest(vf, aesgcm, manifest)
 
-        # ── Go back and write the real manifest offset ──
-        vf.seek(8 + SALT_SIZE)  # right after magic + salt
+        # 6. Write actual manifest offset in header
+        vf.seek(manifest_offset_pos)
         vf.write(struct.pack('<Q', manifest_offset))
 
     # Clear master key from memory (best-effort)
@@ -270,9 +476,10 @@ def encrypt_folder_to_vault(
         'bytes_encrypted': total_encrypted,
         'vault_size': vault_path.stat().st_size,
         'salt_hex': salt.hex(),
-        'created_at': manifest['last_modified']
+        'created_at': manifest['last_modified'],
+        'version': 3
     }
-    logger.info(f"✅ Vault v2 created: {vault_path} ({len(files)} files, {total_encrypted} bytes)")
+    logger.info(f"✅ Vault v3 created: {vault_path} ({len(files)} files, {total_encrypted} bytes)")
     return stats
 
 
@@ -301,6 +508,7 @@ def read_vault_manifest(
 ) -> dict:
     """
     Decrypt and return ONLY the vault manifest (tail block).
+    Supports both v3 encapsulated vaults and v2 legacy vaults.
     Does NOT decrypt any file data — used for populating the GUI file tree.
 
     Returns:
@@ -310,20 +518,14 @@ def read_vault_manifest(
         raise FileNotFoundError(f"Vault not found: {vault_path}")
 
     with open(vault_path, 'rb') as vf:
-        # Read and validate header
-        magic = vf.read(8)
-        if magic != VAULT_MAGIC_V2:
-            raise ValueError(f"Invalid vault magic: {magic!r} (expected USBVLT02)")
-
-        salt = vf.read(SALT_SIZE)
-        manifest_offset = struct.unpack('<Q', vf.read(8))[0]
+        layout = _get_vault_layout(vf)
 
         # Derive master key
-        k_master, _ = derive_master_key(k_local, k_cloud, salt=salt)
+        k_master, _ = derive_master_key(k_local, k_cloud, salt=layout.salt)
         aesgcm = AESGCM(k_master)
 
         # Seek to manifest at tail
-        vf.seek(manifest_offset)
+        vf.seek(layout.manifest_offset)
         manifest = _read_encrypted_manifest(vf, aesgcm)
 
     k_master = bytes(KEY_SIZE)
@@ -365,11 +567,8 @@ def decrypt_single_file(
         Decrypted file bytes (plaintext).
     """
     with open(vault_path, 'rb') as vf:
-        # Read salt from header
-        vf.seek(8)  # skip magic
-        salt = vf.read(SALT_SIZE)
-
-        k_master, _ = derive_master_key(k_local, k_cloud, salt=salt)
+        layout = _get_vault_layout(vf)
+        k_master, _ = derive_master_key(k_local, k_cloud, salt=layout.salt)
         aesgcm = AESGCM(k_master)
 
         # Seek to file's data offset
@@ -440,10 +639,8 @@ def decrypt_files_to_working_dir(
         raise ValueError("No files to decrypt")
 
     with open(vault_path, 'rb') as vf:
-        # Read salt
-        vf.seek(8)
-        salt = vf.read(SALT_SIZE)
-        k_master, _ = derive_master_key(k_local, k_cloud, salt=salt)
+        layout = _get_vault_layout(vf)
+        k_master, _ = derive_master_key(k_local, k_cloud, salt=layout.salt)
         aesgcm = AESGCM(k_master)
 
         temp_dir = Path(tempfile.mkdtemp(prefix='usbvault_work_'))
@@ -477,6 +674,9 @@ def decrypt_files_to_working_dir(
                 pass
 
     k_master = bytes(KEY_SIZE)
+    return temp_dir
+
+
 def decrypt_directory_to_working_dir(
     vault_path: Path,
     k_local: bytes,
@@ -503,9 +703,8 @@ def decrypt_directory_to_working_dir(
         target_dir = Path(tempfile.mkdtemp(prefix='usbvault_work_'))
 
     with open(vault_path, 'rb') as vf:
-        vf.seek(8)
-        salt = vf.read(SALT_SIZE)
-        k_master, _ = derive_master_key(k_local, k_cloud, salt=salt)
+        layout = _get_vault_layout(vf)
+        k_master, _ = derive_master_key(k_local, k_cloud, salt=layout.salt)
         aesgcm = AESGCM(k_master)
 
         for i, entry in enumerate(matching):
@@ -603,12 +802,11 @@ def update_vault_on_lock(
         logger.info("No changes detected — vault unchanged.")
         return manifest
 
-    # Read salt from vault header
+    # Read layout from vault header
     with open(vault_path, 'rb') as vf:
-        vf.seek(8)
-        salt = vf.read(SALT_SIZE)
+        layout = _get_vault_layout(vf)
 
-    k_master, _ = derive_master_key(k_local, k_cloud, salt=salt)
+    k_master, _ = derive_master_key(k_local, k_cloud, salt=layout.salt)
     aesgcm = AESGCM(k_master)
 
     # Calculate dead space from modified + deleted files
@@ -619,16 +817,9 @@ def update_vault_on_lock(
     for rel_path in deleted:
         dead_space += existing_files[rel_path]['size']
 
-    # Open vault for appending new/modified data
-    # We truncate at the old manifest offset (remove old manifest) then append
-    manifest_offset = None
-    with open(vault_path, 'rb') as vf:
-        vf.seek(8 + SALT_SIZE)
-        old_manifest_offset = struct.unpack('<Q', vf.read(8))[0]
-
     # Truncate the old manifest (we'll write a new one)
     with open(vault_path, 'r+b') as vf:
-        vf.truncate(old_manifest_offset)
+        vf.truncate(layout.manifest_offset)
 
     # Build new file list starting from unchanged entries
     new_file_list = list(unchanged)
@@ -677,7 +868,7 @@ def update_vault_on_lock(
         _write_encrypted_manifest(vf, aesgcm, manifest)
 
         # Update manifest offset in header
-        vf.seek(8 + SALT_SIZE)
+        vf.seek(layout.manifest_offset_pos)
         vf.write(struct.pack('<Q', manifest_offset))
 
     k_master = bytes(KEY_SIZE)
@@ -698,28 +889,69 @@ def compact_vault(
 ) -> dict:
     """
     Rewrite the vault to eliminate dead space from modified/deleted files.
-
-    Decrypts all live files, writes a fresh vault with no gaps.
+    Preserves encapsulated v3 header and lease token.
     """
     manifest = read_vault_manifest(vault_path, k_local, k_cloud)
     drive_metadata = manifest.get('drive_metadata', {})
+
+    header_data = None
+    try:
+        header_data = read_vault_header(vault_path)
+    except Exception:
+        pass
 
     # Decrypt all files to a temp dir
     temp_dir = decrypt_files_to_working_dir(
         vault_path, k_local, k_cloud, manifest, progress_callback=progress_callback
     )
 
+    config = header_data.get('config') if header_data else None
     # Re-encrypt as a fresh vault
     stats = encrypt_folder_to_vault(
         temp_dir, vault_path, k_local, k_cloud,
+        config=config,
         drive_metadata=drive_metadata,
         progress_callback=progress_callback
     )
 
+    # Restore lease if present
+    if header_data and header_data.get('lease'):
+        update_vault_header(vault_path, lease_data=header_data['lease'])
+
     # Wipe temp
     secure_wipe_temp(temp_dir)
 
-    logger.info(f"✅ Vault compacted. Old dead space eliminated.")
+    logger.info("✅ Vault compacted. Old dead space eliminated.")
+    return stats
+
+
+def migrate_v2_to_v3(
+    vault_path: Path,
+    k_local: bytes,
+    k_cloud: bytes,
+    config: dict,
+    lease_data: Optional[dict] = None
+) -> dict:
+    """
+    Migrate a legacy v2 vault into a v3 encapsulated vault.
+    Consolidates config, local key share, and optional lease token directly into vault.enc.
+    """
+    manifest = read_vault_manifest(vault_path, k_local, k_cloud)
+    drive_metadata = manifest.get('drive_metadata', {})
+
+    temp_dir = decrypt_files_to_working_dir(vault_path, k_local, k_cloud, manifest)
+
+    stats = encrypt_folder_to_vault(
+        temp_dir, vault_path, k_local, k_cloud,
+        config=config,
+        drive_metadata=drive_metadata
+    )
+
+    if lease_data:
+        update_vault_header(vault_path, lease_data=lease_data)
+
+    secure_wipe_temp(temp_dir)
+    logger.info(f"✅ Migrated v2 vault to v3 encapsulated vault: {vault_path}")
     return stats
 
 
@@ -781,24 +1013,32 @@ def secure_wipe_temp(temp_dir: Path, progress_callback=None) -> int:
 
 def inspect_vault_header(vault_path: Path) -> Optional[dict]:
     """
-    Read basic vault info without decryption.
-    Only tells you if it's a valid v2 vault and its file size.
-    Manifest is encrypted so file list is NOT accessible without keys.
+    Read basic vault info without full file decryption.
+    Checks validity of v3 or v2 headers and returns metadata.
     """
     if not vault_path.exists():
         return None
     try:
         with open(vault_path, 'rb') as vf:
             magic = vf.read(8)
-            if magic == VAULT_MAGIC_V2:
-                _salt = vf.read(SALT_SIZE)
-                manifest_offset = struct.unpack('<Q', vf.read(8))[0]
-                vault_size = vault_path.stat().st_size
+            vault_size = vault_path.stat().st_size
+            if magic == VAULT_MAGIC_V3:
+                layout = _get_vault_layout(vf)
+                return {
+                    'version': 3,
+                    'vault_size': vault_size,
+                    'manifest_offset': layout.manifest_offset,
+                    'valid': True,
+                    'encapsulated': True
+                }
+            elif magic == VAULT_MAGIC_V2:
+                layout = _get_vault_layout(vf)
                 return {
                     'version': 2,
                     'vault_size': vault_size,
-                    'manifest_offset': manifest_offset,
-                    'valid': True
+                    'manifest_offset': layout.manifest_offset,
+                    'valid': True,
+                    'encapsulated': False
                 }
             elif magic == VAULT_MAGIC_V1:
                 return {'version': 1, 'valid': True, 'legacy': True}

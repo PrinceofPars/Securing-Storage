@@ -96,8 +96,12 @@ def _derive_lease_key(k_local: bytes, drive_id: str) -> bytes:
 # Lease Token Storage
 # ──────────────────────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Lease Token Storage
+# ──────────────────────────────────────────────────────────────────────────────
+
 def save_lease_token(
-    lease_path: Path,
+    lease_path: Optional[Path],
     k_local: bytes,
     drive_id: str,
     fingerprint_hash: str,
@@ -105,9 +109,10 @@ def save_lease_token(
     jwt_token: str,
     issued_at: int,
     expires_at: int,
-    user_email: str = ''
+    user_email: str = '',
+    vault_path: Optional[Path] = None
 ) -> None:
-    """Encrypt and persist the lease token to lease.tok."""
+    """Encrypt and persist the lease token into vault.enc header or lease.tok."""
     inner_data = {
         'drive_id':        drive_id,
         'fingerprint':     fingerprint_hash,
@@ -134,22 +139,60 @@ def save_lease_token(
         'data':  base64.b64encode(ciphertext).decode('ascii')
     }
 
-    lease_path.parent.mkdir(parents=True, exist_ok=True)
-    lease_path.write_text(json.dumps(lease_envelope, indent=2), encoding='utf-8')
-    logger.info(f"Lease token saved to: {lease_path}")
+    # If vault_path is provided and exists, encapsulate directly inside vault header
+    if vault_path and vault_path.exists():
+        try:
+            import usb_client.crypto_engine as ce
+            ce.update_vault_header(vault_path, lease_data=lease_envelope)
+            logger.info(f"Lease token encapsulated into vault header: {vault_path}")
+            # Remove any loose lease file if it exists
+            if lease_path and lease_path.exists():
+                try:
+                    lease_path.unlink()
+                    logger.info(f"Removed redundant loose lease file: {lease_path}")
+                except Exception:
+                    pass
+            return
+        except Exception as e:
+            logger.warning(f"Could not encapsulate lease into vault header ({e}), falling back to lease_path")
+
+    if lease_path:
+        lease_path.parent.mkdir(parents=True, exist_ok=True)
+        lease_path.write_text(json.dumps(lease_envelope, indent=2), encoding='utf-8')
+        logger.info(f"Lease token saved to fallback file: {lease_path}")
 
 
 def load_lease_token(
-    lease_path: Path,
+    lease_path: Optional[Path],
     k_local: bytes,
-    drive_id: str
+    drive_id: str,
+    vault_path: Optional[Path] = None
 ) -> Optional[dict]:
-    """Load and decrypt the lease token from lease.tok."""
-    if not lease_path.exists():
+    """Load and decrypt the lease token from vault.enc header or lease.tok."""
+    envelope = None
+
+    # Check encapsulated vault header first
+    if vault_path and vault_path.exists():
+        try:
+            import usb_client.crypto_engine as ce
+            header_data = ce.read_vault_header(vault_path)
+            if header_data and header_data.get('lease'):
+                envelope = header_data['lease']
+        except Exception as e:
+            logger.debug(f"Could not read lease from vault header: {e}")
+
+    # Fallback to standalone lease file
+    if not envelope and lease_path and lease_path.exists():
+        try:
+            envelope = json.loads(lease_path.read_text(encoding='utf-8'))
+        except Exception:
+            envelope = None
+
+    if not envelope:
         return None
+
     try:
-        envelope = json.loads(lease_path.read_text(encoding='utf-8'))
-        version  = envelope.get('v', 0)
+        version = envelope.get('v', 0)
         if version not in (1, 2):  # Accept v1 tokens for backwards compat
             return None
 
@@ -179,6 +222,27 @@ def load_lease_token(
         return None
 
 
+def clear_lease_token(
+    lease_path: Optional[Path] = None,
+    vault_path: Optional[Path] = None
+) -> None:
+    """Clear lease token from vault header and remove loose lease file."""
+    if vault_path and vault_path.exists():
+        try:
+            import usb_client.crypto_engine as ce
+            ce.update_vault_header(vault_path, clear_lease=True)
+            logger.info(f"Cleared lease token in vault header: {vault_path}")
+        except Exception as e:
+            logger.warning(f"Failed to clear lease in vault header: {e}")
+
+    if lease_path and lease_path.exists():
+        try:
+            lease_path.unlink()
+            logger.info(f"Deleted loose lease file: {lease_path}")
+        except Exception as e:
+            logger.warning(f"Failed to delete loose lease file: {e}")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Online Authentication Flow (v2: now handles PENDING_APPROVAL)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -189,7 +253,8 @@ def online_auth(
     fingerprint_hash: str,
     user_email: str,
     k_local: bytes,
-    lease_path: Path,
+    lease_path: Optional[Path] = None,
+    vault_path: Optional[Path] = None,
     timeout: int = 30
 ) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
     """
@@ -225,11 +290,11 @@ def online_auth(
                 jwt_token        = jwt_token,
                 issued_at        = issued_at,
                 expires_at       = expires_at_unix,
-                user_email       = user_email
+                user_email       = user_email,
+                vault_path       = vault_path
             )
 
             scope = data.get('trust_scope', 'LEASE')
-            label = data.get('drive_label', '')
             logger.info(f"Online auth GRANTED for drive {drive_id} ({scope})")
             return 'GRANTED', cloud_key_share, f"Access granted ({scope}).", None
 
@@ -271,7 +336,8 @@ def poll_request_status(
     fingerprint_hash: str,
     user_email: str,
     k_local: bytes,
-    lease_path: Path,
+    lease_path: Optional[Path] = None,
+    vault_path: Optional[Path] = None,
     timeout: int = 10
 ) -> Tuple[str, Optional[str], Optional[str]]:
     """
@@ -301,7 +367,7 @@ def poll_request_status(
             expires_at_unix = data.get('expires_at_unix', int(time.time()) + 7 * 86400)
             scope           = data.get('granted_scope', 'CUSTOM_LEASE')
 
-            # Save lease token for offline use
+            # Save lease token into vault header (or fallback file)
             if cloud_key_share:
                 save_lease_token(
                     lease_path       = lease_path,
@@ -312,7 +378,8 @@ def poll_request_status(
                     jwt_token        = jwt_token,
                     issued_at        = int(time.time()),
                     expires_at       = expires_at_unix,
-                    user_email       = user_email
+                    user_email       = user_email,
+                    vault_path       = vault_path
                 )
 
             return 'APPROVED', cloud_key_share, f"Approved ({scope})"
@@ -332,13 +399,14 @@ def poll_request_status(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def offline_lease_check(
-    lease_path: Path,
+    lease_path: Optional[Path],
     k_local: bytes,
     drive_id: str,
-    current_fingerprint: str
+    current_fingerprint: str,
+    vault_path: Optional[Path] = None
 ) -> Tuple[bool, Optional[str], Optional[str]]:
     """Validate the local lease token for offline access."""
-    lease = load_lease_token(lease_path, k_local, drive_id)
+    lease = load_lease_token(lease_path, k_local, drive_id, vault_path=vault_path)
 
     if lease is None:
         return False, None, (
@@ -360,13 +428,8 @@ def offline_lease_check(
     # Check fingerprint binding
     lease_fingerprint = lease.get('fingerprint', '')
     if current_fingerprint.lower() != lease_fingerprint.lower():
-        # Delete the lease token file since it is invalid for this machine
-        try:
-            if lease_path.exists():
-                lease_path.unlink()
-                logger.info(f"Deleted mismatched lease file: {lease_path}")
-        except Exception as e:
-            logger.warning(f"Failed to delete mismatched lease file: {e}")
+        # Clear invalid lease token
+        clear_lease_token(lease_path=lease_path, vault_path=vault_path)
 
         return False, None, (
             "Hardware fingerprint mismatch. "
@@ -396,7 +459,8 @@ def authenticate(
     fingerprint_hash: str,
     user_email: str,
     k_local: bytes,
-    lease_path: Path
+    lease_path: Optional[Path] = None,
+    vault_path: Optional[Path] = None
 ) -> Tuple[str, Optional[str], str, bool, Optional[str]]:
     """
     High-level authentication dispatcher.
@@ -410,7 +474,7 @@ def authenticate(
         logger.info("Network detected — attempting online authentication...")
         result, cks, message, request_id = online_auth(
             api_base_url, drive_id, fingerprint_hash, user_email,
-            k_local, lease_path
+            k_local, lease_path=lease_path, vault_path=vault_path
         )
 
         if result == 'GRANTED':
@@ -425,18 +489,18 @@ def authenticate(
             # Network error during online attempt — try offline
             logger.info(f"Online auth failed ({message}), trying offline lease...")
             success, cks, offline_msg = offline_lease_check(
-                lease_path, k_local, drive_id, fingerprint_hash
+                lease_path, k_local, drive_id, fingerprint_hash, vault_path=vault_path
             )
             if success:
                 return 'OFFLINE_GRANTED', cks, offline_msg, False, None
-            
+
             # Combine the online failure reason with offline status so user knows why it failed
             combined_err = f"{message} (Offline check: {offline_msg})" if message else offline_msg
             return 'OFFLINE_DENIED', None, combined_err, False, None
     else:
         logger.info("No network — checking offline lease...")
         success, cks, msg = offline_lease_check(
-            lease_path, k_local, drive_id, fingerprint_hash
+            lease_path, k_local, drive_id, fingerprint_hash, vault_path=vault_path
         )
         if success:
             return 'OFFLINE_GRANTED', cks, msg, False, None
@@ -444,12 +508,17 @@ def authenticate(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Lease Info Display (for CLI/debugging)
+# Lease Info Display (for GUI/debugging)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def get_lease_info(lease_path: Path, k_local: bytes, drive_id: str) -> Optional[dict]:
+def get_lease_info(
+    lease_path: Optional[Path],
+    k_local: bytes,
+    drive_id: str,
+    vault_path: Optional[Path] = None
+) -> Optional[dict]:
     """Return lease info dict or None."""
-    lease = load_lease_token(lease_path, k_local, drive_id)
+    lease = load_lease_token(lease_path, k_local, drive_id, vault_path=vault_path)
     if not lease:
         return None
 
