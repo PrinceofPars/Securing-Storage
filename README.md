@@ -167,7 +167,7 @@ python usb_client/gui.py
 
 ### Step 1: Initialize & Encrypt a Drive
 1. Launch the Desktop Client.
-2. Enter the **Backend URL** (e.g., `http://localhost:3000`) and **Owner Email**.
+2. Enter the **Owner Email**.
 3. Select the folder to protect and click **`🚀 Initialize & Encrypt Drive`**.
 4. The client creates `vault.enc` and registers the drive fingerprint with the backend.
 
