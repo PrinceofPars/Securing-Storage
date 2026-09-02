@@ -53,12 +53,28 @@ def check_internet_connectivity(
     port: int = CONNECTIVITY_PORT,
     timeout: float = CONNECTIVITY_TIMEOUT
 ) -> bool:
+    """
+    Check if the host has internet connectivity.
+    Tries raw TCP socket check first (fast), then falls back to HTTPS HEAD
+    request to ensure environments blocking raw DNS TCP (port 53) are properly detected as online.
+    """
     try:
         socket.setdefaulttimeout(timeout)
         with socket.create_connection((host, port), timeout=timeout):
             return True
     except (socket.timeout, socket.error, OSError):
-        return False
+        pass
+
+    # Fallback to HTTP/HTTPS check (works through proxies, VPNs, and networks blocking raw TCP port 53)
+    for test_url in ("https://www.google.com", "https://1.1.1.1"):
+        try:
+            r = requests.head(test_url, timeout=3)
+            if r.status_code < 500:
+                return True
+        except Exception:
+            continue
+
+    return False
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -174,7 +190,7 @@ def online_auth(
     user_email: str,
     k_local: bytes,
     lease_path: Path,
-    timeout: int = 10
+    timeout: int = 30
 ) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
     """
     Attempt online authentication against the backend API.
@@ -344,9 +360,18 @@ def offline_lease_check(
     # Check fingerprint binding
     lease_fingerprint = lease.get('fingerprint', '')
     if current_fingerprint.lower() != lease_fingerprint.lower():
+        # Delete the lease token file since it is invalid for this machine
+        try:
+            if lease_path.exists():
+                lease_path.unlink()
+                logger.info(f"Deleted mismatched lease file: {lease_path}")
+        except Exception as e:
+            logger.warning(f"Failed to delete mismatched lease file: {e}")
+
         return False, None, (
             "Hardware fingerprint mismatch. "
-            "This lease is bound to a different machine."
+            "This lease was bound to a different machine and has been deleted. "
+            "Please connect to the internet and authenticate online to register this device."
         )
 
     time_left  = expires_at - now
@@ -398,13 +423,16 @@ def authenticate(
             return 'DENIED', None, message, True, None
         else:
             # Network error during online attempt — try offline
-            logger.info("Online auth failed with error, trying offline lease...")
-            success, cks, msg = offline_lease_check(
+            logger.info(f"Online auth failed ({message}), trying offline lease...")
+            success, cks, offline_msg = offline_lease_check(
                 lease_path, k_local, drive_id, fingerprint_hash
             )
             if success:
-                return 'OFFLINE_GRANTED', cks, msg, False, None
-            return 'OFFLINE_DENIED', None, msg, False, None
+                return 'OFFLINE_GRANTED', cks, offline_msg, False, None
+            
+            # Combine the online failure reason with offline status so user knows why it failed
+            combined_err = f"{message} (Offline check: {offline_msg})" if message else offline_msg
+            return 'OFFLINE_DENIED', None, combined_err, False, None
     else:
         logger.info("No network — checking offline lease...")
         success, cks, msg = offline_lease_check(
