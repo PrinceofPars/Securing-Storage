@@ -155,7 +155,7 @@ class USBKillswitchApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("USB Killswitch v2 — Zero-Trust Storage Protection")
+        self.title("Zero-Trust Storage Protection")
         self.geometry("880x700")
         self.minsize(800, 620)
         self.configure(fg_color=COLORS['bg'])
@@ -201,7 +201,7 @@ class USBKillswitchApp(ctk.CTk):
         header_box = ctk.CTkFrame(frame, fg_color="transparent")
         header_box.pack(pady=(0, 16))
 
-        ctk.CTkLabel(header_box, text="🔐 USB KILLSWITCH SETUP",
+        ctk.CTkLabel(header_box, text="🔐 ZERO-TRUST STORAGE SETUP",
                      font=ctk.CTkFont(size=11, weight="bold"),
                      text_color=COLORS['accent']).pack()
         ctk.CTkLabel(header_box, text="Initialize Encrypted Vault",
@@ -650,7 +650,13 @@ class USBKillswitchApp(ctk.CTk):
         threading.Thread(target=do_auth, daemon=True).start()
 
     def _load_vault_workspace(self, k_local, cloud_key_hex, mode, msg):
-        self.unlock_status.configure(text=f"Loading vault ({mode})...", text_color=COLORS['warning'])
+        def _set_status(txt, color):
+            if hasattr(self, 'wait_status') and self.wait_status.winfo_exists():
+                self.wait_status.configure(text=txt, text_color=color)
+            elif hasattr(self, 'unlock_status') and self.unlock_status.winfo_exists():
+                self.unlock_status.configure(text=txt, text_color=color)
+
+        _set_status(f"Loading vault ({mode})...", COLORS['warning'])
         self.update_idletasks()
 
         def do_load():
@@ -659,7 +665,7 @@ class USBKillswitchApp(ctk.CTk):
                 manifest = ce.read_vault_manifest(VAULT_FILE, k_local, k_cloud)
 
                 # Initialize unified working directory for current session
-                work_dir = Path(tempfile.mkdtemp(prefix='usbvault_session_'))
+                work_dir = Path(tempfile.mkdtemp(prefix='zerotrust_session_'))
 
                 self.session['unlocked']        = True
                 self.session['manifest']        = manifest
@@ -674,8 +680,7 @@ class USBKillswitchApp(ctk.CTk):
 
             except Exception as e:
                 logger.exception("Manifest load error")
-                self.after(0, lambda: self.unlock_status.configure(
-                    text=f"Decryption failed: {e}", text_color=COLORS['danger']))
+                self.after(0, lambda: _set_status(f"Decryption failed: {e}", COLORS['danger']))
 
         threading.Thread(target=do_load, daemon=True).start()
 

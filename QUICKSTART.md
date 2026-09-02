@@ -148,7 +148,7 @@ Designed with a dark glassmorphism mobile UI for smartphone screens.
 ### Step A: Initialize an Encrypted USB Drive
 
 1. Launch `USB_Killswitch.exe`.
-2. Enter the **Backend URL** (e.g. `http://localhost:3000`) and **Owner Email** (e.g. `owner@gmail.com`).
+2. Authenticate with **"Continue with Google"** or enter your **Owner Email** (e.g. `owner@gmail.com`).
 3. Click **Browse...** and choose the folder you want to protect.
 4. *(Optional)* Check *"Securely wipe original folder files"* to erase unencrypted originals.
 5. Click **`🚀 Initialize & Encrypt Drive`**.

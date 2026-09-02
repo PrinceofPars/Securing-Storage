@@ -36,55 +36,55 @@ graph TB
     classDef killswitchNode fill:#4c0519,stroke:#f43f5e,stroke-width:1.5px,color:#ffe4e6;
 
     %% Client
-    subgraph EDGE["💾 1. PORTABLE EDGE CLIENT (Host Machine / USB)"]
+    subgraph EDGE["💾 1. PORTABLE EDGE CLIENT - Host Machine / USB"]
         direction TB
         E_HW["🔍 Hardware Fingerprint Collector"]:::nodeStyle
         E_QR["📱 Dynamic QR Code Generator"]:::nodeStyle
-        E_LOCAL_KEY["🔑 Local Key Share (Encrypted on USB)"]:::keyNode
-        E_ENGINE["⚙️ Cryptographic Decryption Engine (RAM Only)"]:::nodeStyle
-        E_VAULT["📦 Encrypted Vault Container (AES-256-GCM)"]:::nodeStyle
+        E_LOCAL_KEY["🔑 Local Key Share - Encrypted on USB"]:::keyNode
+        E_ENGINE["⚙️ Cryptographic Decryption Engine - RAM Only"]:::nodeStyle
+        E_VAULT["📦 Encrypted Vault Container - AES-256-GCM"]:::nodeStyle
         E_LEASE["⏱️ Offline Hardware Lease Token"]:::nodeStyle
 
         E_HW --> E_QR
-        E_LOCAL_KEY -.->|Combine in Volatile Memory| E_ENGINE
-        E_ENGINE -->|On-Demand Single File Decrypt| E_VAULT
-        E_LEASE -.->|Offline Fallback Validation| E_ENGINE
+        E_LOCAL_KEY -.->|"Combine in Volatile RAM"| E_ENGINE
+        E_ENGINE -->|"On-Demand Single File Decrypt"| E_VAULT
+        E_LEASE -.->|"Offline Fallback Validation"| E_ENGINE
     end
 
     %% Server
     subgraph SERVER["☁️ 2. CENTRAL MANAGEMENT SERVER & API"]
         direction TB
         S_GATEWAY["🛡️ API Gateway & Device Authenticator"]:::nodeStyle
-        S_REGISTRY["📋 Drive Fleet & User Access Registry (ACL)"]:::nodeStyle
+        S_REGISTRY["📋 Drive Fleet & User Access Registry"]:::nodeStyle
         S_REMOTE_KEY["🔐 Remote Server Key Store"]:::keyNode
         S_LEASE_SVC["⏱️ Ephemeral Lease & Token Manager"]:::nodeStyle
         S_AUDIT["📝 Real-Time Forensic Audit Logger"]:::nodeStyle
-        S_KILL["🔴 Remote Killswitch Controller (Mark LOST)"]:::killswitchNode
+        S_KILL["🔴 Remote Killswitch Controller - Mark LOST"]:::killswitchNode
 
         S_GATEWAY --> S_REGISTRY
         S_REGISTRY --> S_LEASE_SVC
         S_LEASE_SVC --> S_REMOTE_KEY
         S_GATEWAY --> S_AUDIT
-        S_KILL -.->|Instant Global Revocation| S_REMOTE_KEY
+        S_KILL -.->|"Instant Global Revocation"| S_REMOTE_KEY
     end
 
     %% Mobile
-    subgraph MOBILE["📱 3. OUT-OF-BAND APPROVAL CHANNEL (Owner Phone)"]
+    subgraph MOBILE["📱 3. OUT-OF-BAND APPROVAL CHANNEL - Owner Phone"]
         direction TB
         M_SCAN["📷 Smartphone Camera / QR Scanner"]:::nodeStyle
         M_PORTAL["🌐 Mobile Glassmorphism Decision Portal"]:::nodeStyle
-        M_SCOPES["⚡ Scoped Access Decision<br/>(1-Time / 24h / 7d / Trust / Deny)"]:::actionNode
+        M_SCOPES["⚡ Scoped Access Decision - 1-Time / 24h / 7d / Trust / Deny"]:::actionNode
 
         M_SCAN --> M_PORTAL
         M_PORTAL --> M_SCOPES
     end
 
     %% Interactions
-    E_HW ==>|1. Unknown Machine Challenge / Access Request| S_GATEWAY
-    E_QR -.->|2. Physical Out-of-Band Optical Scan| M_SCAN
-    M_SCOPES ==>|3. Send Cryptographic Approval & Scope| S_LEASE_SVC
-    S_REMOTE_KEY ==>|4. Deliver Remote Key Share (2s Polling)| E_ENGINE
-    S_KILL -.->|5. Global Lockout on Compromised Drive| E_HW
+    E_HW ==>|"1. Unknown Machine Challenge / Access Request"| S_GATEWAY
+    E_QR -.->|"2. Physical Out-of-Band Optical Scan"| M_SCAN
+    M_SCOPES ==>|"3. Send Cryptographic Approval and Scope"| S_LEASE_SVC
+    S_REMOTE_KEY ==>|"4. Deliver Remote Key Share via 2s Polling"| E_ENGINE
+    S_KILL -.->|"5. Global Lockout on Compromised Drive"| E_HW
 
     class EDGE clientBox;
     class SERVER serverBox;
@@ -98,6 +98,7 @@ graph TB
 | Feature | Description |
 |---|---|
 | **Split-Key AES-256-GCM** | Military-grade authenticated encryption where the master key is divided between local drive storage and cloud backend. |
+| **Zero-Config Cloud Pre-integration** | Pre-configured to communicate with the cloud management gateway out-of-the-box, without requiring manual server URL setup. |
 | **Out-of-Band Mobile 2FA** | Real-time QR code display on the desktop client that can be scanned by the owner’s smartphone to approve or deny access. |
 | **Instant Remote Killswitch** | One-click emergency lockout from the web dashboard that immediately revokes key delivery worldwide. |
 | **Hardware Fingerprint Binding** | Binds sessions to unique CPU, motherboard, and disk signatures to prevent token cloning. |
@@ -167,9 +168,9 @@ python usb_client/gui.py
 
 ### Step 1: Initialize & Encrypt a Drive
 1. Launch the Desktop Client.
-2. Enter the **Backend URL** (e.g., `http://localhost:3000`) and **Owner Email**.
+2. Sign in with **"Continue with Google"** or enter the **Owner Email** (e.g., `owner@gmail.com`).
 3. Select the folder to protect and click **`🚀 Initialize & Encrypt Drive`**.
-4. The client creates `vault.enc` and registers the drive fingerprint with the backend.
+4. The client creates `vault.enc` and registers the drive fingerprint with the backend automatically.
 
 ### Step 2: Unlocking on a Trusted Machine
 * On recognized hardware with an active lease, clicking **`Unlock Vault`** grants instant access without approval prompts.
