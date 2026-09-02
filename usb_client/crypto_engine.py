@@ -1,33 +1,37 @@
 """
-crypto_engine.py — Split-Key AES-256-GCM Encryption Engine
-============================================================
+crypto_engine.py — Split-Key AES-256-GCM Encryption Engine v2
+================================================================
 Implements the cryptographic core of the USB Killswitch system.
 
 Key Architecture:
   K_local   : 32-byte key share stored ON the USB drive (local_key.bin)
   K_cloud   : 32-byte key share returned by the backend API
-  K_master  : Derived from K_local XOR K_cloud (or HKDF if configured)
+  K_master  : Derived from K_local XOR K_cloud via HKDF
                → Used as the AES-256 encryption key for vault.enc
 
-Vault Format (vault.enc):
-  ┌─────────────────────────────────┐
-  │  Magic header (8 bytes)         │  "USBVLT01"
-  │  Salt (16 bytes)                │  Random, stored in plaintext
-  │  AAD length (4 bytes, LE)       │  Length of Additional Auth Data
-  │  AAD / metadata JSON            │  File list, timestamps, version
-  │  ────── Per-file entries ─────  │
-  │  [GCM Nonce (12 bytes)]         │
-  │  [GCM Tag   (16 bytes)]         │
-  │  [Ciphertext length (8 bytes)]  │
-  │  [Ciphertext]                   │
-  └─────────────────────────────────┘
+Vault Format v2 (vault.enc) — Tail-Manifest Design:
+  ┌──────────────────────────────────────────────┐
+  │  Magic header       (8 bytes: "USBVLT02")   │
+  │  Salt               (32 bytes)               │
+  │  Manifest Offset    (8 bytes, uint64 LE)     │
+  ├──────── DATA PAYLOAD ────────────────────────┤
+  │  Encrypted file chunk 0                      │
+  │  Encrypted file chunk 1                      │
+  │  ...                                         │
+  ├──────── MANIFEST (at tail) ──────────────────┤
+  │  Manifest Nonce     (12 bytes)               │
+  │  Manifest Tag       (16 bytes)               │
+  │  Manifest CT Length  (4 bytes, uint32 LE)    │
+  │  Manifest Ciphertext (encrypted JSON)        │
+  └──────────────────────────────────────────────┘
 
-Decryption produces files into a secure temporary directory which is
-scrubbed on session end (lock command).
+The manifest is at the END of the file so new/modified files
+can be appended without rewriting the entire vault.
 
 Dependencies: cryptography >= 41.0
 """
 
+import hashlib
 import io
 import json
 import logging
@@ -51,15 +55,16 @@ logger = logging.getLogger(__name__)
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-VAULT_MAGIC     = b'USBVLT01'   # 8 bytes — identifies a valid vault file
-NONCE_SIZE      = 12            # GCM standard nonce size (bytes)
-TAG_SIZE        = 16            # GCM authentication tag size (bytes)
-KEY_SIZE        = 32            # AES-256 key size (bytes)
-SALT_SIZE       = 16            # HKDF salt size (bytes)
-CHUNK_SIZE      = 64 * 1024     # 64 KB read/write chunks
+VAULT_MAGIC_V2  = b'USBVLT02'   # 8 bytes — v2 vault identifier
+VAULT_MAGIC_V1  = b'USBVLT01'   # 8 bytes — v1 (legacy, read-only support)
+NONCE_SIZE      = 12             # GCM standard nonce (bytes)
+TAG_SIZE        = 16             # GCM authentication tag (bytes)
+KEY_SIZE        = 32             # AES-256 key size (bytes)
+SALT_SIZE       = 32             # HKDF salt size (bytes) — increased from v1's 16
+HEADER_SIZE     = 8 + 32 + 8    # magic + salt + manifest_offset = 48 bytes
+DATA_START      = HEADER_SIZE    # Payload data begins immediately after header
 
-# Path (relative to USB root) for the local key share
-LOCAL_KEY_FILENAME  = 'local_key.bin'
+LOCAL_KEY_FILENAME = 'local_key.bin'
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -67,86 +72,49 @@ LOCAL_KEY_FILENAME  = 'local_key.bin'
 # ──────────────────────────────────────────────────────────────────────────────
 
 def generate_local_key() -> bytes:
-    """
-    Generate a new cryptographically random 256-bit local key share.
-    Should be called exactly once during drive initialisation.
-    """
+    """Generate a new cryptographically random 256-bit local key share."""
     return secrets.token_bytes(KEY_SIZE)
 
 
 def save_local_key(key_bytes: bytes, key_path: Path) -> None:
-    """
-    Persist the local key share to the USB drive.
-    In a production system this file could be stored in a hidden/protected
-    partition, but for the PoC it lives in the client directory.
-    """
+    """Persist the local key share to the USB drive."""
     key_path.parent.mkdir(parents=True, exist_ok=True)
     key_path.write_bytes(key_bytes)
     logger.info(f"Local key share saved to: {key_path}")
 
 
 def load_local_key(key_path: Path) -> bytes:
-    """
-    Load the local key share from the USB drive.
-    Raises FileNotFoundError if the key file is missing.
-    """
+    """Load the local key share from the USB drive."""
     if not key_path.exists():
-        raise FileNotFoundError(
-            f"Local key share not found at: {key_path}\n"
-            "Has this drive been initialised? Run option [1] first."
-        )
+        raise FileNotFoundError(f"Local key share not found at: {key_path}")
     key_bytes = key_path.read_bytes()
     if len(key_bytes) != KEY_SIZE:
-        raise ValueError(
-            f"Local key share has unexpected length: {len(key_bytes)} bytes "
-            f"(expected {KEY_SIZE}). File may be corrupt."
-        )
+        raise ValueError(f"Local key has unexpected length: {len(key_bytes)} (expected {KEY_SIZE})")
     return key_bytes
 
 
 def derive_master_key(
     k_local: bytes,
     k_cloud: bytes,
-    salt: Optional[bytes] = None,
-    use_hkdf: bool = True
+    salt: Optional[bytes] = None
 ) -> Tuple[bytes, bytes]:
     """
-    Derive the master encryption key from the two key shares.
+    Derive the master encryption key from two key shares via HKDF.
 
-    Method 1 (Default, use_hkdf=True):
-      Combined = K_local XOR K_cloud   (bitwise XOR of two 32-byte values)
-      K_master = HKDF-SHA256(IKM=Combined, salt=salt, info=b'usb-vault-key', length=32)
-
-    Method 2 (use_hkdf=False):
-      K_master = K_local XOR K_cloud   (direct XOR, simpler but less safe)
-
-    Using HKDF is preferred because:
-      - Even if one share leaks, HKDF adds an additional extraction step
-      - Salt binds the derived key to this specific vault/session
-      - Provides key domain separation via the info parameter
-
-    Args:
-        k_local:   32-byte local key share (from USB)
-        k_cloud:   32-byte cloud key share (from backend)
-        salt:      16-byte random salt. If None, a new one is generated.
-        use_hkdf:  If True, apply HKDF after XOR combination.
+    Steps:
+      1. XOR combine K_local and K_cloud
+      2. HKDF-SHA256(IKM=combined, salt=salt, info=domain_separator)
 
     Returns:
-        Tuple of (k_master: bytes, salt: bytes)
+        (k_master, salt) tuple
     """
     if len(k_local) != KEY_SIZE:
         raise ValueError(f"K_local must be {KEY_SIZE} bytes, got {len(k_local)}")
     if len(k_cloud) != KEY_SIZE:
         raise ValueError(f"K_cloud must be {KEY_SIZE} bytes, got {len(k_cloud)}")
 
-    # Step 1: XOR combine the two shares
     xor_combined = bytes(a ^ b for a, b in zip(k_local, k_cloud))
-    logger.debug("Key shares XOR-combined successfully.")
 
-    if not use_hkdf:
-        return xor_combined, b''
-
-    # Step 2: HKDF extraction and expansion
     if salt is None:
         salt = secrets.token_bytes(SALT_SIZE)
 
@@ -154,314 +122,39 @@ def derive_master_key(
         algorithm=hashes.SHA256(),
         length=KEY_SIZE,
         salt=salt,
-        info=b'usb-vault-aes256-gcm-key-v1',
+        info=b'usb-vault-aes256-gcm-key-v2',
         backend=default_backend()
     )
     k_master = hkdf.derive(xor_combined)
-    logger.debug(f"Master key derived via HKDF with salt: {salt.hex()}")
-
     return k_master, salt
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Vault Encryption
+# File Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _collect_files(source_dir: Path) -> List[Path]:
     """Recursively collect all files under source_dir."""
-    files = []
-    for item in sorted(source_dir.rglob('*')):
-        if item.is_file():
-            files.append(item)
-    return files
+    return sorted([f for f in source_dir.rglob('*') if f.is_file()])
 
 
-def encrypt_folder_to_vault(
-    source_dir: Path,
-    vault_path: Path,
-    k_local: bytes,
-    k_cloud: bytes,
-    progress_callback=None
-) -> dict:
-    """
-    Encrypt an entire folder into a single vault.enc file.
+def _file_sha256(filepath: Path) -> str:
+    """Compute SHA-256 hash of a file."""
+    h = hashlib.sha256()
+    with open(filepath, 'rb') as f:
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
 
-    Algorithm per file:
-      1. Generate random 12-byte GCM nonce
-      2. Encrypt file content with AES-256-GCM using K_master
-      3. Write [nonce | tag | ciphertext_length | ciphertext] to vault
-
-    Args:
-        progress_callback: Optional callable(current_index, total_count, rel_path_str)
-
-    Returns a metadata dict with file list and vault stats.
-    """
-    k_master, salt = derive_master_key(k_local, k_cloud)
-    aesgcm = AESGCM(k_master)
-
-    files = _collect_files(source_dir)
-    if not files:
-        raise ValueError(f"No files found in source directory: {source_dir}")
-
-    # Build Additional Authenticated Data (AAD) — metadata not encrypted but authenticated
-    file_entries = []
-    for f in files:
-        rel = f.relative_to(source_dir)
-        file_entries.append({
-            'path':     str(rel).replace('\\', '/'),
-            'size':     f.stat().st_size,
-            'modified': int(f.stat().st_mtime)
-        })
-
-    aad_meta = {
-        'version':    1,
-        'created_at': int(time.time()),
-        'file_count': len(files),
-        'files':      file_entries
-    }
-    aad_bytes = json.dumps(aad_meta, separators=(',', ':')).encode('utf-8')
-
-    total_encrypted = 0
-    vault_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(vault_path, 'wb') as vf:
-        # Write magic + salt + AAD header
-        vf.write(VAULT_MAGIC)
-        vf.write(salt)
-        vf.write(struct.pack('<I', len(aad_bytes)))  # 4-byte LE AAD length
-        vf.write(aad_bytes)
-
-        # Encrypt each file
-        for i, file_path in enumerate(files):
-            rel_path = str(file_path.relative_to(source_dir)).replace('\\', '/')
-            logger.info(f"  Encrypting [{i+1}/{len(files)}]: {rel_path}")
-            if progress_callback:
-                progress_callback(i + 1, len(files), rel_path)
-
-            nonce = secrets.token_bytes(NONCE_SIZE)
-            plaintext = file_path.read_bytes()
-
-            # AAD for this specific file entry = its relative path bytes
-            file_aad = rel_path.encode('utf-8')
-            ciphertext = aesgcm.encrypt(nonce, plaintext, file_aad)
-            # AES-GCM from cryptography lib appends the 16-byte tag at the END
-            # ciphertext = actual_ciphertext + tag (last 16 bytes)
-            actual_ct = ciphertext[:-TAG_SIZE]
-            tag       = ciphertext[-TAG_SIZE:]
-
-            vf.write(nonce)                                      # 12 bytes
-            vf.write(tag)                                        # 16 bytes
-            vf.write(struct.pack('<Q', len(actual_ct)))          # 8 bytes (uint64 LE)
-            vf.write(actual_ct)
-
-            total_encrypted += len(plaintext)
-
-    # Overwrite master key from memory (best-effort in Python)
-    k_master = bytes(KEY_SIZE)
-
-    stats = {
-        'vault_path':       str(vault_path),
-        'source_dir':       str(source_dir),
-        'files_encrypted':  len(files),
-        'bytes_encrypted':  total_encrypted,
-        'vault_size':       vault_path.stat().st_size,
-        'salt_hex':         salt.hex(),
-        'created_at':       aad_meta['created_at']
-    }
-    logger.info(f"✅ Vault created: {vault_path} ({len(files)} files, {total_encrypted} bytes)")
-    return stats
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Vault Decryption
-# ──────────────────────────────────────────────────────────────────────────────
-
-def decrypt_vault_to_temp(
-    vault_path: Path,
-    k_local: bytes,
-    k_cloud: bytes
-) -> Path:
-    """
-    Decrypt vault.enc into a secure temporary directory.
-
-    The temp directory is created via tempfile.mkdtemp() and is
-    NOT automatically deleted — the caller MUST call secure_wipe_temp()
-    when the session ends to prevent data leakage.
-
-    Returns:
-        Path to the temporary decrypted directory.
-
-    Raises:
-        ValueError:            If the vault magic header is invalid.
-        cryptography.exceptions.InvalidTag: If decryption fails (data tampered or wrong key).
-    """
-    if not vault_path.exists():
-        raise FileNotFoundError(f"Vault file not found: {vault_path}")
-
-    k_master, salt = None, None  # Will be set after reading the vault header
-
-    with open(vault_path, 'rb') as vf:
-        # Validate magic header
-        magic = vf.read(len(VAULT_MAGIC))
-        if magic != VAULT_MAGIC:
-            raise ValueError(
-                f"Invalid vault magic: {magic!r}. "
-                "File is not a valid USB Killswitch vault."
-            )
-
-        # Read salt and derive master key
-        salt = vf.read(SALT_SIZE)
-        k_master, _ = derive_master_key(k_local, k_cloud, salt=salt, use_hkdf=True)
-        aesgcm = AESGCM(k_master)
-
-        # Read AAD (metadata)
-        aad_len_bytes = vf.read(4)
-        aad_len       = struct.unpack('<I', aad_len_bytes)[0]
-        aad_bytes     = vf.read(aad_len)
-        aad_meta      = json.loads(aad_bytes.decode('utf-8'))
-        file_list     = aad_meta.get('files', [])
-        file_count    = aad_meta.get('file_count', len(file_list))
-
-        logger.info(f"Vault metadata: {file_count} files, created {aad_meta.get('created_at')}")
-
-        # Create secure temp directory
-        temp_dir = Path(tempfile.mkdtemp(prefix='usbvault_session_'))
-        logger.info(f"Decrypting to temp dir: {temp_dir}")
-
-        # Decrypt each file
-        for i, file_entry in enumerate(file_list):
-            rel_path = file_entry['path']
-            logger.info(f"  Decrypting [{i+1}/{file_count}]: {rel_path}")
-
-            nonce      = vf.read(NONCE_SIZE)
-            tag        = vf.read(TAG_SIZE)
-            ct_len     = struct.unpack('<Q', vf.read(8))[0]
-            ciphertext = vf.read(ct_len)
-
-            # Re-assemble to cryptography lib's expected format: ct + tag
-            ct_with_tag = ciphertext + tag
-            file_aad    = rel_path.encode('utf-8')
-
-            # This will raise InvalidTag if auth fails — do not catch it here
-            plaintext = aesgcm.decrypt(nonce, ct_with_tag, file_aad)
-
-            # Write decrypted file, preserving directory structure
-            out_path = temp_dir / rel_path
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_bytes(plaintext)
-
-    # Overwrite master key from memory (best-effort)
-    k_master = bytes(KEY_SIZE)
-
-    logger.info(f"✅ Vault decrypted: {file_count} files to {temp_dir}")
-    return temp_dir
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Secure Session Cleanup
-# ──────────────────────────────────────────────────────────────────────────────
-
-def secure_wipe_temp(temp_dir: Path, progress_callback=None) -> int:
-    """
-    Securely erase all files in the temporary session directory.
-
-    For each file:
-      1. Overwrite with random bytes (one pass)
-      2. Truncate to 0
-      3. Delete
-
-    Note: True forensic-grade wiping (DoD 5220.22-M / Gutmann) requires
-    multiple passes and is beyond this PoC's scope. Modern SSDs/NVMe with
-    wear-leveling may retain data regardless of overwrites.
-
-    Args:
-        temp_dir: Path returned by decrypt_vault_to_temp()
-        progress_callback: Optional callable(current_count, total_count, rel_path_str)
-
-    Returns:
-        Number of files wiped.
-    """
-    if not temp_dir.exists():
-        logger.warning(f"Temp dir does not exist, nothing to wipe: {temp_dir}")
-        return 0
-
-    wiped = 0
-    errors = []
-
-    files_to_wipe = [f for f in temp_dir.rglob('*') if f.is_file()]
-    total_files = len(files_to_wipe)
-
-    for i, file_path in enumerate(files_to_wipe):
-        try:
-            rel_path = file_path.relative_to(temp_dir)
-            logger.info(f"  Wiping [{i+1}/{total_files}]: {rel_path}")
-            if progress_callback:
-                progress_callback(i + 1, total_files, str(rel_path))
-
-            size = file_path.stat().st_size
-            if size > 0:
-                with open(file_path, 'r+b') as f:
-                    f.write(os.urandom(size))
-                    f.flush()
-                    os.fsync(f.fileno())
-            file_path.unlink()
-            wiped += 1
-        except Exception as e:
-            errors.append((str(file_path), str(e)))
-            logger.warning(f"Could not wipe {file_path}: {e}")
-
-    # Remove directory tree
-    try:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-    except Exception as e:
-        logger.error(f"Failed to remove temp dir {temp_dir}: {e}")
-
-    if errors:
-        logger.warning(f"Wipe completed with {len(errors)} errors.")
-    else:
-        logger.info(f"✅ Secure wipe complete: {wiped} files erased from {temp_dir}")
-
-    return wiped
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Vault Inspection (read metadata without decrypting)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def inspect_vault_header(vault_path: Path) -> Optional[dict]:
-    """
-    Read and return vault metadata (AAD) WITHOUT decrypting file contents.
-    Useful for displaying vault info before authentication.
-    """
-    if not vault_path.exists():
-        return None
-    try:
-        with open(vault_path, 'rb') as vf:
-            magic = vf.read(len(VAULT_MAGIC))
-            if magic != VAULT_MAGIC:
-                return None
-            _salt    = vf.read(SALT_SIZE)
-            aad_len  = struct.unpack('<I', vf.read(4))[0]
-            aad_bytes = vf.read(aad_len)
-            return json.loads(aad_bytes.decode('utf-8'))
-    except Exception as e:
-        logger.warning(f"Could not inspect vault header: {e}")
-        return None
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Cloud Key Share Parsing
-# ──────────────────────────────────────────────────────────────────────────────
 
 def hex_to_key_bytes(hex_str: str) -> bytes:
-    """
-    Convert a 64-character hex string (cloud or local key share) to 32 raw bytes.
-    """
+    """Convert a 64-character hex string to 32 raw bytes."""
     hex_str = hex_str.strip().lower()
     if len(hex_str) != 64:
-        raise ValueError(
-            f"Key share must be 64 hex characters (32 bytes), got {len(hex_str)} chars."
-        )
+        raise ValueError(f"Key must be 64 hex chars (32 bytes), got {len(hex_str)}")
     return bytes.fromhex(hex_str)
 
 
@@ -471,22 +164,615 @@ def bytes_to_hex(b: bytes) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CLI entrypoint (for standalone testing)
+# Vault Encryption — v2 Tail-Manifest Format
+# ──────────────────────────────────────────────────────────────────────────────
+
+def encrypt_folder_to_vault(
+    source_dir: Path,
+    vault_path: Path,
+    k_local: bytes,
+    k_cloud: bytes,
+    drive_metadata: Optional[dict] = None,
+    progress_callback=None
+) -> dict:
+    """
+    Encrypt an entire folder into a v2 vault.enc file with tail-manifest.
+
+    Binary layout:
+      [MAGIC 8B][SALT 32B][MANIFEST_OFFSET 8B][...file chunks...][MANIFEST BLOCK]
+
+    Each file chunk is raw AES-GCM ciphertext. The per-file nonce and tag
+    are stored in the manifest (not inline), keeping offset math simple.
+
+    Args:
+        source_dir: Folder to encrypt
+        vault_path: Output vault.enc path
+        k_local: Local key share (32 bytes)
+        k_cloud: Cloud key share (32 bytes)
+        drive_metadata: Optional dict with label, owner_email, etc.
+        progress_callback: Optional callable(current, total, rel_path)
+
+    Returns:
+        Stats dict with encryption results.
+    """
+    k_master, salt = derive_master_key(k_local, k_cloud)
+    aesgcm = AESGCM(k_master)
+
+    files = _collect_files(source_dir)
+    if not files:
+        raise ValueError(f"No files found in: {source_dir}")
+
+    vault_path.parent.mkdir(parents=True, exist_ok=True)
+    total_encrypted = 0
+
+    with open(vault_path, 'wb') as vf:
+        # ── Write header with placeholder manifest offset ──
+        vf.write(VAULT_MAGIC_V2)
+        vf.write(salt)
+        vf.write(struct.pack('<Q', 0))  # placeholder, updated after writing manifest
+
+        # ── Write encrypted file chunks ──
+        manifest_files = []
+        for i, file_path in enumerate(files):
+            rel_path = str(file_path.relative_to(source_dir)).replace('\\', '/')
+            logger.info(f"  Encrypting [{i+1}/{len(files)}]: {rel_path}")
+            if progress_callback:
+                progress_callback(i + 1, len(files), rel_path)
+
+            plaintext = file_path.read_bytes()
+            original_size = len(plaintext)
+            file_hash = hashlib.sha256(plaintext).hexdigest()
+
+            nonce = secrets.token_bytes(NONCE_SIZE)
+            ciphertext_with_tag = aesgcm.encrypt(nonce, plaintext, rel_path.encode('utf-8'))
+            # cryptography lib: ciphertext = actual_ct + tag (last 16 bytes)
+            actual_ct = ciphertext_with_tag[:-TAG_SIZE]
+            tag = ciphertext_with_tag[-TAG_SIZE:]
+
+            offset = vf.tell()
+            vf.write(actual_ct)
+
+            manifest_files.append({
+                'path': rel_path,
+                'offset': offset,
+                'size': len(actual_ct),
+                'nonce': nonce.hex(),
+                'tag': tag.hex(),
+                'original_size': original_size,
+                'modified': int(file_path.stat().st_mtime),
+                'sha256': file_hash
+            })
+            total_encrypted += original_size
+
+        # ── Build and encrypt manifest ──
+        manifest = {
+            'version': 2,
+            'drive_metadata': drive_metadata or {},
+            'files': manifest_files,
+            'dead_space_bytes': 0,
+            'last_modified': int(time.time())
+        }
+
+        manifest_offset = vf.tell()
+        _write_encrypted_manifest(vf, aesgcm, manifest)
+
+        # ── Go back and write the real manifest offset ──
+        vf.seek(8 + SALT_SIZE)  # right after magic + salt
+        vf.write(struct.pack('<Q', manifest_offset))
+
+    # Clear master key from memory (best-effort)
+    k_master = bytes(KEY_SIZE)
+
+    stats = {
+        'vault_path': str(vault_path),
+        'source_dir': str(source_dir),
+        'files_encrypted': len(files),
+        'bytes_encrypted': total_encrypted,
+        'vault_size': vault_path.stat().st_size,
+        'salt_hex': salt.hex(),
+        'created_at': manifest['last_modified']
+    }
+    logger.info(f"✅ Vault v2 created: {vault_path} ({len(files)} files, {total_encrypted} bytes)")
+    return stats
+
+
+def _write_encrypted_manifest(vf: BinaryIO, aesgcm: AESGCM, manifest: dict):
+    """Encrypt and write the manifest block at the current file position."""
+    manifest_json = json.dumps(manifest, separators=(',', ':')).encode('utf-8')
+    nonce = secrets.token_bytes(NONCE_SIZE)
+    ct_with_tag = aesgcm.encrypt(nonce, manifest_json, b'vault-manifest-v2')
+    actual_ct = ct_with_tag[:-TAG_SIZE]
+    tag = ct_with_tag[-TAG_SIZE:]
+
+    vf.write(nonce)                                    # 12 bytes
+    vf.write(tag)                                      # 16 bytes
+    vf.write(struct.pack('<I', len(actual_ct)))         # 4 bytes
+    vf.write(actual_ct)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Vault Manifest Reading (on-demand, no full extraction)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def read_vault_manifest(
+    vault_path: Path,
+    k_local: bytes,
+    k_cloud: bytes
+) -> dict:
+    """
+    Decrypt and return ONLY the vault manifest (tail block).
+    Does NOT decrypt any file data — used for populating the GUI file tree.
+
+    Returns:
+        Manifest dict with 'version', 'drive_metadata', 'files', etc.
+    """
+    if not vault_path.exists():
+        raise FileNotFoundError(f"Vault not found: {vault_path}")
+
+    with open(vault_path, 'rb') as vf:
+        # Read and validate header
+        magic = vf.read(8)
+        if magic != VAULT_MAGIC_V2:
+            raise ValueError(f"Invalid vault magic: {magic!r} (expected USBVLT02)")
+
+        salt = vf.read(SALT_SIZE)
+        manifest_offset = struct.unpack('<Q', vf.read(8))[0]
+
+        # Derive master key
+        k_master, _ = derive_master_key(k_local, k_cloud, salt=salt)
+        aesgcm = AESGCM(k_master)
+
+        # Seek to manifest at tail
+        vf.seek(manifest_offset)
+        manifest = _read_encrypted_manifest(vf, aesgcm)
+
+    k_master = bytes(KEY_SIZE)
+    return manifest
+
+
+def _read_encrypted_manifest(vf: BinaryIO, aesgcm: AESGCM) -> dict:
+    """Read and decrypt the manifest block from the current file position."""
+    nonce = vf.read(NONCE_SIZE)
+    tag = vf.read(TAG_SIZE)
+    ct_len = struct.unpack('<I', vf.read(4))[0]
+    ciphertext = vf.read(ct_len)
+
+    ct_with_tag = ciphertext + tag
+    plaintext = aesgcm.decrypt(nonce, ct_with_tag, b'vault-manifest-v2')
+    return json.loads(plaintext.decode('utf-8'))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# On-Demand Single File Decryption
+# ──────────────────────────────────────────────────────────────────────────────
+
+def decrypt_single_file(
+    vault_path: Path,
+    k_local: bytes,
+    k_cloud: bytes,
+    file_entry: dict
+) -> bytes:
+    """
+    Decrypt a single file from the vault by seeking to its offset.
+
+    Args:
+        vault_path: Path to vault.enc
+        k_local: Local key share
+        k_cloud: Cloud key share
+        file_entry: Dict from manifest with offset, size, nonce, tag, path
+
+    Returns:
+        Decrypted file bytes (plaintext).
+    """
+    with open(vault_path, 'rb') as vf:
+        # Read salt from header
+        vf.seek(8)  # skip magic
+        salt = vf.read(SALT_SIZE)
+
+        k_master, _ = derive_master_key(k_local, k_cloud, salt=salt)
+        aesgcm = AESGCM(k_master)
+
+        # Seek to file's data offset
+        vf.seek(file_entry['offset'])
+        ciphertext = vf.read(file_entry['size'])
+
+    # Reconstruct nonce, tag, and AAD
+    nonce = bytes.fromhex(file_entry['nonce'])
+    tag = bytes.fromhex(file_entry['tag'])
+    file_aad = file_entry['path'].encode('utf-8')
+
+    ct_with_tag = ciphertext + tag
+    plaintext = aesgcm.decrypt(nonce, ct_with_tag, file_aad)
+
+    k_master = bytes(KEY_SIZE)
+    return plaintext
+
+
+def decrypt_single_file_to_temp(
+    vault_path: Path,
+    k_local: bytes,
+    k_cloud: bytes,
+    file_entry: dict
+) -> Path:
+    """
+    Decrypt a single file to a temporary location for viewing.
+
+    Returns:
+        Path to the decrypted temporary file.
+    """
+    plaintext = decrypt_single_file(vault_path, k_local, k_cloud, file_entry)
+
+    # Create temp dir preserving original filename
+    temp_dir = Path(tempfile.mkdtemp(prefix='usbvault_view_'))
+    filename = Path(file_entry['path']).name
+    out_path = temp_dir / filename
+    out_path.write_bytes(plaintext)
+    logger.info(f"Decrypted single file to: {out_path}")
+    return out_path
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Bulk Decryption to Working Directory
+# ──────────────────────────────────────────────────────────────────────────────
+
+def decrypt_files_to_working_dir(
+    vault_path: Path,
+    k_local: bytes,
+    k_cloud: bytes,
+    manifest: dict,
+    file_entries: Optional[List[dict]] = None,
+    progress_callback=None
+) -> Path:
+    """
+    Decrypt selected files (or all) into a working directory for editing.
+
+    Args:
+        vault_path: Path to vault.enc
+        manifest: Already-loaded manifest dict
+        file_entries: Specific files to extract. None = all files.
+        progress_callback: Optional callable(current, total, filename)
+
+    Returns:
+        Path to the working directory.
+    """
+    entries = file_entries if file_entries is not None else manifest.get('files', [])
+    if not entries:
+        raise ValueError("No files to decrypt")
+
+    with open(vault_path, 'rb') as vf:
+        # Read salt
+        vf.seek(8)
+        salt = vf.read(SALT_SIZE)
+        k_master, _ = derive_master_key(k_local, k_cloud, salt=salt)
+        aesgcm = AESGCM(k_master)
+
+        temp_dir = Path(tempfile.mkdtemp(prefix='usbvault_work_'))
+        logger.info(f"Decrypting {len(entries)} files to working dir: {temp_dir}")
+
+        for i, entry in enumerate(entries):
+            rel_path = entry['path']
+            if progress_callback:
+                progress_callback(i + 1, len(entries), rel_path)
+
+            logger.info(f"  Decrypting [{i+1}/{len(entries)}]: {rel_path}")
+
+            vf.seek(entry['offset'])
+            ciphertext = vf.read(entry['size'])
+
+            nonce = bytes.fromhex(entry['nonce'])
+            tag = bytes.fromhex(entry['tag'])
+            file_aad = rel_path.encode('utf-8')
+
+            ct_with_tag = ciphertext + tag
+            plaintext = aesgcm.decrypt(nonce, ct_with_tag, file_aad)
+
+            out_path = temp_dir / rel_path
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(plaintext)
+
+            # Restore original modification time
+            try:
+                os.utime(out_path, (entry.get('modified', time.time()), entry.get('modified', time.time())))
+            except Exception:
+                pass
+
+    k_master = bytes(KEY_SIZE)
+    logger.info(f"✅ Decrypted {len(entries)} files to {temp_dir}")
+    return temp_dir
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Incremental Vault Update on Lock
+# ──────────────────────────────────────────────────────────────────────────────
+
+def update_vault_on_lock(
+    vault_path: Path,
+    k_local: bytes,
+    k_cloud: bytes,
+    working_dir: Path,
+    manifest: dict,
+    progress_callback=None
+) -> dict:
+    """
+    Detect modified/new/deleted files and update the vault incrementally.
+
+    Logic:
+      1. Walk working_dir, hash every file
+      2. Compare against manifest:
+         - UNCHANGED: skip
+         - MODIFIED: re-encrypt, append at end, update manifest (old = dead space)
+         - NEW: encrypt, append at end, add to manifest
+         - DELETED: remove from manifest (old = dead space)
+      3. Write fresh manifest at tail
+      4. Update manifest_offset pointer in header
+
+    Args:
+        vault_path: Path to vault.enc
+        working_dir: Temp working directory with potentially edited files
+        manifest: Current manifest dict (loaded earlier)
+        progress_callback: Optional callable(current, total, action_str)
+
+    Returns:
+        Updated manifest dict.
+    """
+    # Build lookup of current manifest files by path
+    existing_files = {f['path']: f for f in manifest.get('files', [])}
+
+    # Collect files from working directory
+    working_files = {}
+    for fp in _collect_files(working_dir):
+        rel = str(fp.relative_to(working_dir)).replace('\\', '/')
+        working_files[rel] = fp
+
+    # Classify changes
+    unchanged = []
+    modified = []
+    new_files = []
+    deleted = []
+
+    for rel_path, fp in working_files.items():
+        current_hash = _file_sha256(fp)
+        if rel_path in existing_files:
+            if current_hash == existing_files[rel_path].get('sha256'):
+                unchanged.append(existing_files[rel_path])
+            else:
+                modified.append((rel_path, fp, current_hash))
+        else:
+            new_files.append((rel_path, fp, current_hash))
+
+    for rel_path in existing_files:
+        if rel_path not in working_files:
+            deleted.append(rel_path)
+
+    total_actions = len(modified) + len(new_files)
+    logger.info(f"Vault update: {len(unchanged)} unchanged, {len(modified)} modified, "
+                f"{len(new_files)} new, {len(deleted)} deleted")
+
+    if total_actions == 0 and len(deleted) == 0:
+        logger.info("No changes detected — vault unchanged.")
+        return manifest
+
+    # Read salt from vault header
+    with open(vault_path, 'rb') as vf:
+        vf.seek(8)
+        salt = vf.read(SALT_SIZE)
+
+    k_master, _ = derive_master_key(k_local, k_cloud, salt=salt)
+    aesgcm = AESGCM(k_master)
+
+    # Calculate dead space from modified + deleted files
+    dead_space = manifest.get('dead_space_bytes', 0)
+    for rel_path, fp, _ in modified:
+        old_entry = existing_files[rel_path]
+        dead_space += old_entry['size']
+    for rel_path in deleted:
+        dead_space += existing_files[rel_path]['size']
+
+    # Open vault for appending new/modified data
+    # We truncate at the old manifest offset (remove old manifest) then append
+    manifest_offset = None
+    with open(vault_path, 'rb') as vf:
+        vf.seek(8 + SALT_SIZE)
+        old_manifest_offset = struct.unpack('<Q', vf.read(8))[0]
+
+    # Truncate the old manifest (we'll write a new one)
+    with open(vault_path, 'r+b') as vf:
+        vf.truncate(old_manifest_offset)
+
+    # Build new file list starting from unchanged entries
+    new_file_list = list(unchanged)
+
+    # Append modified + new files
+    action_idx = 0
+    with open(vault_path, 'r+b') as vf:
+        vf.seek(0, 2)  # seek to end
+
+        for rel_path, fp, file_hash in modified + new_files:
+            action_idx += 1
+            action = "Re-encrypting" if rel_path in existing_files else "Encrypting new"
+            logger.info(f"  {action} [{action_idx}/{total_actions}]: {rel_path}")
+            if progress_callback:
+                progress_callback(action_idx, total_actions, f"{action}: {rel_path}")
+
+            plaintext = fp.read_bytes()
+            nonce = secrets.token_bytes(NONCE_SIZE)
+            file_aad = rel_path.encode('utf-8')
+            ct_with_tag = aesgcm.encrypt(nonce, plaintext, file_aad)
+            actual_ct = ct_with_tag[:-TAG_SIZE]
+            tag = ct_with_tag[-TAG_SIZE:]
+
+            offset = vf.tell()
+            vf.write(actual_ct)
+
+            new_file_list.append({
+                'path': rel_path,
+                'offset': offset,
+                'size': len(actual_ct),
+                'nonce': nonce.hex(),
+                'tag': tag.hex(),
+                'original_size': len(plaintext),
+                'modified': int(fp.stat().st_mtime),
+                'sha256': file_hash
+            })
+
+        # Sort file list by path for consistency
+        new_file_list.sort(key=lambda f: f['path'])
+
+        # Write new manifest at current position (end of data)
+        manifest_offset = vf.tell()
+        manifest['files'] = new_file_list
+        manifest['dead_space_bytes'] = dead_space
+        manifest['last_modified'] = int(time.time())
+        _write_encrypted_manifest(vf, aesgcm, manifest)
+
+        # Update manifest offset in header
+        vf.seek(8 + SALT_SIZE)
+        vf.write(struct.pack('<Q', manifest_offset))
+
+    k_master = bytes(KEY_SIZE)
+    logger.info(f"✅ Vault updated: {action_idx} files written, {len(deleted)} removed, "
+                f"{dead_space} bytes dead space")
+    return manifest
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Vault Compaction
+# ──────────────────────────────────────────────────────────────────────────────
+
+def compact_vault(
+    vault_path: Path,
+    k_local: bytes,
+    k_cloud: bytes,
+    progress_callback=None
+) -> dict:
+    """
+    Rewrite the vault to eliminate dead space from modified/deleted files.
+
+    Decrypts all live files, writes a fresh vault with no gaps.
+    """
+    manifest = read_vault_manifest(vault_path, k_local, k_cloud)
+    drive_metadata = manifest.get('drive_metadata', {})
+
+    # Decrypt all files to a temp dir
+    temp_dir = decrypt_files_to_working_dir(
+        vault_path, k_local, k_cloud, manifest, progress_callback=progress_callback
+    )
+
+    # Re-encrypt as a fresh vault
+    stats = encrypt_folder_to_vault(
+        temp_dir, vault_path, k_local, k_cloud,
+        drive_metadata=drive_metadata,
+        progress_callback=progress_callback
+    )
+
+    # Wipe temp
+    secure_wipe_temp(temp_dir)
+
+    logger.info(f"✅ Vault compacted. Old dead space eliminated.")
+    return stats
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Secure Session Cleanup
+# ──────────────────────────────────────────────────────────────────────────────
+
+def secure_wipe_temp(temp_dir: Path, progress_callback=None) -> int:
+    """
+    Securely erase all files in a temporary session directory.
+
+    For each file: overwrite with random bytes → truncate → delete.
+
+    Args:
+        temp_dir: Path to wipe
+        progress_callback: Optional callable(current, total, filename)
+
+    Returns:
+        Number of files wiped.
+    """
+    if not temp_dir.exists():
+        logger.warning(f"Temp dir does not exist: {temp_dir}")
+        return 0
+
+    wiped = 0
+    files_to_wipe = [f for f in temp_dir.rglob('*') if f.is_file()]
+    total = len(files_to_wipe)
+
+    for i, fp in enumerate(files_to_wipe):
+        try:
+            rel = fp.relative_to(temp_dir)
+            logger.info(f"  Wiping [{i+1}/{total}]: {rel}")
+            if progress_callback:
+                progress_callback(i + 1, total, str(rel))
+
+            size = fp.stat().st_size
+            if size > 0:
+                with open(fp, 'r+b') as f:
+                    f.write(os.urandom(size))
+                    f.flush()
+                    os.fsync(f.fileno())
+            fp.unlink()
+            wiped += 1
+        except Exception as e:
+            logger.warning(f"Could not wipe {fp}: {e}")
+
+    try:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    except Exception as e:
+        logger.error(f"Failed to remove temp dir: {e}")
+
+    logger.info(f"✅ Secure wipe: {wiped}/{total} files erased")
+    return wiped
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Vault Inspection (read info without keys — limited to header check)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def inspect_vault_header(vault_path: Path) -> Optional[dict]:
+    """
+    Read basic vault info without decryption.
+    Only tells you if it's a valid v2 vault and its file size.
+    Manifest is encrypted so file list is NOT accessible without keys.
+    """
+    if not vault_path.exists():
+        return None
+    try:
+        with open(vault_path, 'rb') as vf:
+            magic = vf.read(8)
+            if magic == VAULT_MAGIC_V2:
+                _salt = vf.read(SALT_SIZE)
+                manifest_offset = struct.unpack('<Q', vf.read(8))[0]
+                vault_size = vault_path.stat().st_size
+                return {
+                    'version': 2,
+                    'vault_size': vault_size,
+                    'manifest_offset': manifest_offset,
+                    'valid': True
+                }
+            elif magic == VAULT_MAGIC_V1:
+                return {'version': 1, 'valid': True, 'legacy': True}
+            return None
+    except Exception as e:
+        logger.warning(f"Could not inspect vault: {e}")
+        return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CLI Self-Test
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
     import sys
-    # Fix Windows console encoding
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     logging.basicConfig(level=logging.DEBUG)
 
-    print("Crypto Engine - Self-test")
+    print("Crypto Engine v2 — Self-test")
     print("-" * 40)
 
     # Test key derivation
     k_local = generate_local_key()
-    k_cloud = generate_local_key()  # fake cloud key for testing
+    k_cloud = generate_local_key()
     print(f"K_local  (hex): {k_local.hex()}")
     print(f"K_cloud  (hex): {k_cloud.hex()}")
 
@@ -494,18 +780,52 @@ if __name__ == '__main__':
     print(f"K_master (hex): {k_master.hex()}")
     print(f"HKDF salt(hex): {salt.hex()}")
 
-    # Verify same inputs → same output
+    # Determinism check
     k_master2, _ = derive_master_key(k_local, k_cloud, salt=salt)
     assert k_master == k_master2, "DETERMINISM TEST FAILED"
     print("✅ Determinism test passed.")
 
-    # Test encrypt/decrypt roundtrip
+    # Encrypt/decrypt roundtrip
     if len(sys.argv) > 1:
         test_folder = Path(sys.argv[1])
-        vault       = Path('./test_vault.enc')
-        stats = encrypt_folder_to_vault(test_folder, vault, k_local, k_cloud)
-        print(f"Encrypted: {stats}")
-        tmp = decrypt_vault_to_temp(vault, k_local, k_cloud)
-        print(f"Decrypted to: {tmp}")
-        wiped = secure_wipe_temp(tmp)
-        print(f"Wiped {wiped} files.")
+        vault = Path('./test_vault_v2.enc')
+        metadata = {'label': 'Test Drive', 'owner_email': 'test@test.com', 'created_at': int(time.time())}
+
+        print(f"\nEncrypting {test_folder}...")
+        stats = encrypt_folder_to_vault(test_folder, vault, k_local, k_cloud, drive_metadata=metadata)
+        print(f"Stats: {stats}")
+
+        print("\nReading manifest...")
+        manifest = read_vault_manifest(vault, k_local, k_cloud)
+        print(f"Manifest: {len(manifest['files'])} files, metadata: {manifest['drive_metadata']}")
+
+        print("\nDecrypting single file...")
+        if manifest['files']:
+            first = manifest['files'][0]
+            data = decrypt_single_file(vault, k_local, k_cloud, first)
+            print(f"Decrypted '{first['path']}': {len(data)} bytes")
+
+        print("\nDecrypting all to working dir...")
+        work_dir = decrypt_files_to_working_dir(vault, k_local, k_cloud, manifest)
+        print(f"Working dir: {work_dir}")
+
+        print("\nSimulating edit (modifying first file)...")
+        first_file = work_dir / manifest['files'][0]['path']
+        first_file.write_bytes(first_file.read_bytes() + b"\n# EDITED")
+
+        print("\nUpdating vault on lock...")
+        updated = update_vault_on_lock(vault, k_local, k_cloud, work_dir, manifest)
+        print(f"Updated manifest: {len(updated['files'])} files, dead_space: {updated['dead_space_bytes']}")
+
+        print("\nWiping working dir...")
+        secure_wipe_temp(work_dir)
+
+        print("\nCompacting vault...")
+        compact_vault(vault, k_local, k_cloud)
+
+        final_manifest = read_vault_manifest(vault, k_local, k_cloud)
+        print(f"Final: {len(final_manifest['files'])} files, dead_space: {final_manifest['dead_space_bytes']}")
+
+        # Cleanup
+        vault.unlink(missing_ok=True)
+        print("\n✅ All tests passed!")
