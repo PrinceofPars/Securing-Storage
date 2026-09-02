@@ -1,0 +1,981 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>USB Killswitch — Admin Dashboard</title>
+  <meta name="description" content="Remote-Killable Encrypted USB Drive System — Admin & Approval Dashboard">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    /* ═══════════════════════════════════════════════
+       CSS Design System — Dark Glassmorphism Theme
+       ═══════════════════════════════════════════════ */
+
+    :root {
+      --bg-primary:       #0a0e1a;
+      --bg-secondary:     #111827;
+      --bg-card:          rgba(17, 24, 39, 0.65);
+      --bg-card-hover:    rgba(30, 41, 59, 0.7);
+      --bg-glass:         rgba(255, 255, 255, 0.04);
+      --bg-glass-hover:   rgba(255, 255, 255, 0.07);
+      --border-glass:     rgba(255, 255, 255, 0.08);
+      --border-active:    rgba(99, 102, 241, 0.4);
+
+      --text-primary:     #f1f5f9;
+      --text-secondary:   #94a3b8;
+      --text-muted:       #64748b;
+
+      --accent-indigo:    #6366f1;
+      --accent-violet:    #8b5cf6;
+      --accent-emerald:   #10b981;
+      --accent-rose:      #f43f5e;
+      --accent-amber:     #f59e0b;
+      --accent-sky:       #0ea5e9;
+      --accent-orange:    #f97316;
+
+      --gradient-primary: linear-gradient(135deg, #6366f1, #8b5cf6);
+      --gradient-danger:  linear-gradient(135deg, #f43f5e, #e11d48);
+      --gradient-success: linear-gradient(135deg, #10b981, #059669);
+
+      --shadow-card:      0 4px 24px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2);
+      --shadow-glow:      0 0 30px rgba(99, 102, 241, 0.15);
+      --shadow-btn:       0 2px 12px rgba(99, 102, 241, 0.3);
+
+      --radius-sm:        8px;
+      --radius-md:        12px;
+      --radius-lg:        16px;
+      --radius-xl:        20px;
+
+      --font:             'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Background gradient orbs */
+    body::before, body::after {
+      content: '';
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(120px);
+      z-index: -1;
+      opacity: 0.4;
+    }
+    body::before {
+      width: 600px; height: 600px;
+      background: radial-gradient(circle, rgba(99, 102, 241, 0.2), transparent 70%);
+      top: -150px; right: -100px;
+    }
+    body::after {
+      width: 500px; height: 500px;
+      background: radial-gradient(circle, rgba(139, 92, 246, 0.15), transparent 70%);
+      bottom: -100px; left: -50px;
+    }
+
+    /* ─── Header ─── */
+    .header {
+      background: var(--bg-glass);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border-glass);
+      padding: 16px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .header-logo {
+      width: 36px; height: 36px;
+      background: var(--gradient-primary);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      box-shadow: var(--shadow-btn);
+    }
+    .header h1 {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+    }
+    .header h1 span { color: var(--accent-indigo); }
+    .header-status {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--accent-emerald);
+      box-shadow: 0 0 8px var(--accent-emerald);
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .status-text {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+    .admin-key-input {
+      background: var(--bg-glass);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-sm);
+      padding: 8px 14px;
+      color: var(--text-primary);
+      font-family: var(--font);
+      font-size: 13px;
+      width: 240px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .admin-key-input:focus {
+      border-color: var(--accent-indigo);
+    }
+    .admin-key-input::placeholder {
+      color: var(--text-muted);
+    }
+
+    /* ─── Layout ─── */
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px 32px;
+    }
+
+    /* ─── Tab Navigation ─── */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 24px;
+      background: var(--bg-glass);
+      border-radius: var(--radius-md);
+      padding: 4px;
+      border: 1px solid var(--border-glass);
+      width: fit-content;
+    }
+    .tab-btn {
+      padding: 10px 20px;
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      font-family: var(--font);
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .tab-btn:hover { color: var(--text-primary); background: var(--bg-glass-hover); }
+    .tab-btn.active {
+      color: var(--text-primary);
+      background: var(--accent-indigo);
+      box-shadow: var(--shadow-btn);
+    }
+    .tab-badge {
+      background: var(--accent-rose);
+      color: white;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 10px;
+      min-width: 18px;
+      text-align: center;
+      animation: pulse-badge 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse-badge {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.1); }
+    }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ─── Section Title ─── */
+    .section-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 16px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* ─── Cards ─── */
+    .card {
+      background: var(--bg-card);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-lg);
+      padding: 20px 24px;
+      margin-bottom: 12px;
+      transition: all 0.25s ease;
+      box-shadow: var(--shadow-card);
+    }
+    .card:hover {
+      border-color: var(--border-active);
+      box-shadow: var(--shadow-card), var(--shadow-glow);
+      transform: translateY(-1px);
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .card-title {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    /* ─── Badges ─── */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .badge-active  { background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-lost    { background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); border: 1px solid rgba(244, 63, 94, 0.3); }
+    .badge-pending { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); border: 1px solid rgba(245, 158, 11, 0.3); animation: pulse-badge 1.5s ease-in-out infinite; }
+
+    /* ─── Meta info ─── */
+    .meta-row {
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      font-size: 13px;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+    }
+    .meta-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .meta-label { color: var(--text-muted); }
+
+    /* ─── Buttons ─── */
+    .btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-family: var(--font);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+    .btn-primary   { background: var(--gradient-primary); color: white; box-shadow: var(--shadow-btn); }
+    .btn-danger    { background: var(--gradient-danger); color: white; }
+    .btn-success   { background: var(--gradient-success); color: white; }
+    .btn-outline {
+      background: transparent;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-glass);
+    }
+    .btn-outline:hover {
+      background: var(--bg-glass-hover);
+      color: var(--text-primary);
+      border-color: var(--border-active);
+    }
+    .btn-sm { padding: 6px 12px; font-size: 11px; }
+    .btn-group {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    /* ─── Approval action buttons ─── */
+    .btn-approve-onetime { background: linear-gradient(135deg, #f59e0b, #d97706); color: #fff; }
+    .btn-approve-24h     { background: linear-gradient(135deg, #0ea5e9, #0284c7); color: #fff; }
+    .btn-approve-7d      { background: linear-gradient(135deg, #6366f1, #4f46e5); color: #fff; }
+    .btn-approve-forever { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
+    .btn-deny            { background: linear-gradient(135deg, #f43f5e, #e11d48); color: #fff; }
+
+    /* ─── Fingerprint mono display ─── */
+    .mono {
+      font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+      font-size: 12px;
+      color: var(--accent-sky);
+      background: rgba(14, 165, 233, 0.08);
+      padding: 2px 8px;
+      border-radius: 4px;
+      word-break: break-all;
+    }
+
+    /* ─── Forms ─── */
+    .form-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-top: 12px;
+    }
+    .form-input {
+      background: var(--bg-glass);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-sm);
+      padding: 8px 14px;
+      color: var(--text-primary);
+      font-family: var(--font);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s;
+      flex: 1;
+    }
+    .form-input:focus { border-color: var(--accent-indigo); }
+    .form-input::placeholder { color: var(--text-muted); }
+
+    /* ─── Empty State ─── */
+    .empty-state {
+      text-align: center;
+      padding: 48px 24px;
+      color: var(--text-muted);
+    }
+    .empty-state-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+      opacity: 0.5;
+    }
+    .empty-state-text {
+      font-size: 14px;
+    }
+
+    /* ─── Pending request card highlight ─── */
+    .pending-card {
+      border-color: rgba(245, 158, 11, 0.3);
+      background: rgba(245, 158, 11, 0.03);
+    }
+    .pending-card:hover {
+      border-color: rgba(245, 158, 11, 0.5);
+    }
+
+    /* ─── Log table ─── */
+    .log-table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: 13px;
+    }
+    .log-table th {
+      text-align: left;
+      padding: 10px 14px;
+      color: var(--text-muted);
+      font-weight: 500;
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border-glass);
+    }
+    .log-table td {
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+      color: var(--text-secondary);
+    }
+    .log-table tr:hover td { background: var(--bg-glass); }
+
+    /* ─── Drive details expandable ─── */
+    .drive-details {
+      display: none;
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border-glass);
+    }
+    .drive-details.open { display: block; }
+    .drive-details h4 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+      margin-top: 14px;
+    }
+    .drive-details h4:first-child { margin-top: 0; }
+
+    .user-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-glass);
+      border: 1px solid var(--border-glass);
+      border-radius: 20px;
+      padding: 4px 12px 4px 8px;
+      font-size: 12px;
+      margin: 3px;
+      color: var(--text-secondary);
+    }
+    .user-chip .remove-btn {
+      cursor: pointer;
+      color: var(--text-muted);
+      transition: color 0.2s;
+      border: none;
+      background: none;
+      font-size: 14px;
+      padding: 0 2px;
+      font-family: var(--font);
+    }
+    .user-chip .remove-btn:hover { color: var(--accent-rose); }
+
+    /* ─── Spinner ─── */
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid var(--border-glass);
+      border-top-color: var(--accent-indigo);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ─── Toast notifications ─── */
+    .toast-container {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .toast {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-md);
+      padding: 12px 20px;
+      font-size: 13px;
+      color: var(--text-primary);
+      box-shadow: var(--shadow-card);
+      animation: slideIn 0.3s ease;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      backdrop-filter: blur(16px);
+    }
+    .toast.success { border-left: 3px solid var(--accent-emerald); }
+    .toast.error   { border-left: 3px solid var(--accent-rose); }
+    .toast.info    { border-left: 3px solid var(--accent-sky); }
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateX(20px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    /* ─── Responsive ─── */
+    @media (max-width: 768px) {
+      .container { padding: 16px; }
+      .header { padding: 12px 16px; flex-wrap: wrap; gap: 12px; }
+      .meta-row { gap: 12px; }
+      .btn-group { flex-direction: column; }
+      .admin-key-input { width: 160px; }
+    }
+
+    /* ─── Refresh Button ─── */
+    .refresh-btn {
+      background: var(--bg-glass);
+      border: 1px solid var(--border-glass);
+      color: var(--text-primary);
+      padding: 6px 14px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 14px;
+      font-family: var(--font);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+    }
+    .refresh-btn:hover {
+      background: var(--bg-glass-hover);
+      border-color: var(--accent-indigo);
+    }
+    .refresh-btn.spinning .refresh-icon {
+      animation: spin 0.6s linear;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═══ Header ═══ -->
+  <header class="header">
+    <div class="header-left">
+      <div class="header-logo">🔐</div>
+      <h1>USB <span>Killswitch</span> Dashboard</h1>
+    </div>
+    <div class="header-status">
+      <input type="password" class="admin-key-input" id="adminKeyInput"
+             placeholder="Admin API Key" value="super_secret_admin_key_change_me">
+      <button class="refresh-btn" id="refreshBtn" onclick="doManualRefresh()">
+        <span class="refresh-icon">🔄</span> Refresh
+      </button>
+      <div class="status-dot" id="statusDot"></div>
+      <span class="status-text" id="statusText">Connecting...</span>
+    </div>
+  </header>
+
+  <!-- ═══ Main Container ═══ -->
+  <div class="container">
+
+    <!-- Tab Navigation -->
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="approvals" id="tab-approvals">
+        🔔 Approval Center <span class="tab-badge" id="pendingBadge" style="display:none">0</span>
+      </button>
+      <button class="tab-btn" data-tab="drives" id="tab-drives">
+        💾 Drives
+      </button>
+      <button class="tab-btn" data-tab="logs" id="tab-logs">
+        📋 Activity Log
+      </button>
+    </div>
+
+    <!-- ═══ Tab: Approval Center ═══ -->
+    <div class="tab-panel active" id="panel-approvals">
+      <div class="section-title">📨 Pending Access Requests</div>
+      <div id="pendingList">
+        <div class="empty-state">
+          <div class="empty-state-icon">🛡️</div>
+          <div class="empty-state-text">No pending requests. All clear.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ Tab: Drives ═══ -->
+    <div class="tab-panel" id="panel-drives">
+      <div class="section-title">💾 Registered Drives</div>
+      <div id="drivesList">
+        <div class="empty-state">
+          <div class="empty-state-icon">💾</div>
+          <div class="empty-state-text">No drives registered yet.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ Tab: Activity Log ═══ -->
+    <div class="tab-panel" id="panel-logs">
+      <div class="section-title">📋 Recent Authentication Events</div>
+      <div id="logsList" class="card">
+        <div class="empty-state">
+          <div class="empty-state-icon">📋</div>
+          <div class="empty-state-text">No activity yet.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- ═══════════════════════════════════════════════
+       JavaScript — Dashboard Logic
+       ═══════════════════════════════════════════════ -->
+  <script>
+    const API_BASE = window.location.origin;
+    let pollInterval = null;
+
+    // ─── Helpers ───
+    function getAdminKey() {
+      return document.getElementById('adminKeyInput').value;
+    }
+
+    async function apiFetch(path, opts = {}) {
+      const headers = { 'Content-Type': 'application/json', 'X-Admin-Key': getAdminKey(), ...opts.headers };
+      const res = await fetch(`${API_BASE}${path}`, { ...opts, headers });
+      return { status: res.status, data: await res.json() };
+    }
+
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toastContainer');
+      const icons = { success: '✅', error: '❌', info: 'ℹ️' };
+      const toast = document.createElement('div');
+      toast.className = `toast ${type}`;
+      toast.innerHTML = `<span>${icons[type] || 'ℹ️'}</span> ${message}`;
+      container.appendChild(toast);
+      setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 4000);
+    }
+
+    function timeAgo(isoStr) {
+      const diff = Date.now() - new Date(isoStr).getTime();
+      const mins = Math.floor(diff / 60000);
+      if (mins < 1) return 'just now';
+      if (mins < 60) return `${mins}m ago`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return `${hrs}h ago`;
+      return `${Math.floor(hrs / 24)}d ago`;
+    }
+
+    function truncFp(fp) {
+      if (!fp) return 'N/A';
+      return fp.substring(0, 12) + '…' + fp.substring(fp.length - 8);
+    }
+
+    // ─── Tab Switching ───
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById(`panel-${btn.dataset.tab}`).classList.add('active');
+      });
+    });
+
+    // ─── Render Pending Requests ───
+    function renderPending(pending) {
+      const container = document.getElementById('pendingList');
+      const badge = document.getElementById('pendingBadge');
+
+      if (pending.length === 0) {
+        badge.style.display = 'none';
+        container.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">🛡️</div>
+            <div class="empty-state-text">No pending requests. All clear.</div>
+          </div>`;
+        return;
+      }
+
+      badge.style.display = 'inline';
+      badge.textContent = pending.length;
+
+      container.innerHTML = pending.map(p => `
+        <div class="card pending-card" id="req-${p.request_id}">
+          <div class="card-header">
+            <div>
+              <span class="card-title">Access Request</span>
+              <span class="badge badge-pending">⏳ PENDING</span>
+            </div>
+            <span class="mono">${p.request_id}</span>
+          </div>
+          <div class="meta-row">
+            <div class="meta-item"><span class="meta-label">Drive:</span> ${p.drive_label || p.drive_id.slice(0, 8) + '…'}</div>
+            <div class="meta-item"><span class="meta-label">Email:</span> ${p.requester_email || 'Not provided'}</div>
+            <div class="meta-item"><span class="meta-label">Requested:</span> ${timeAgo(p.created_at)}</div>
+          </div>
+          <div class="meta-row" style="margin-top:4px">
+            <div class="meta-item"><span class="meta-label">Fingerprint:</span> <span class="mono">${truncFp(p.hardware_fingerprint)}</span></div>
+          </div>
+          <div class="btn-group" style="margin-top:14px">
+            <button class="btn btn-sm btn-approve-onetime" onclick="approveRequest('${p.request_id}', 'ONE_TIME')">🔑 One-Time Session</button>
+            <button class="btn btn-sm btn-approve-24h" onclick="approveRequest('${p.request_id}', 'CUSTOM_LEASE', 24)">⏱️ 24-Hour Lease</button>
+            <button class="btn btn-sm btn-approve-7d" onclick="approveRequest('${p.request_id}', 'CUSTOM_LEASE', 168)">📅 7-Day Lease</button>
+            <button class="btn btn-sm btn-approve-forever" onclick="approveRequest('${p.request_id}', 'FOREVER')">♾️ Trust Permanently</button>
+            <button class="btn btn-sm btn-deny" onclick="denyRequest('${p.request_id}')">🚫 Deny & Block</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // ─── Render Drives ───
+    function renderDrives(drives) {
+      const container = document.getElementById('drivesList');
+      if (drives.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">💾</div>
+            <div class="empty-state-text">No drives registered yet.</div>
+          </div>`;
+        return;
+      }
+
+      container.innerHTML = drives.map(d => `
+        <div class="card" id="drive-${d.drive_id}">
+          <div class="card-header">
+            <div>
+              <span class="card-title">${d.label || 'Unlabelled Drive'}</span>
+              <span class="badge ${d.status === 'ACTIVE' ? 'badge-active' : 'badge-lost'}">${d.status === 'ACTIVE' ? '● ACTIVE' : '⊘ LOST'}</span>
+            </div>
+            <div class="btn-group">
+              ${d.status === 'ACTIVE'
+                ? `<button class="btn btn-sm btn-danger" onclick="markLost('${d.drive_id}')">🔴 Mark LOST</button>`
+                : `<button class="btn btn-sm btn-success" onclick="reactivate('${d.drive_id}')">🟢 Reactivate</button>`
+              }
+              <button class="btn btn-sm btn-outline" onclick="toggleDriveDetails('${d.drive_id}')">Details</button>
+            </div>
+          </div>
+          <div class="meta-row">
+            <div class="meta-item"><span class="meta-label">ID:</span> <span class="mono">${d.drive_id.slice(0, 8)}…</span></div>
+            <div class="meta-item"><span class="meta-label">Owner:</span> ${d.owner_email}</div>
+            <div class="meta-item"><span class="meta-label">Users:</span> ${d.access_list_count}</div>
+            <div class="meta-item"><span class="meta-label">Devices:</span> ${d.trusted_device_count}</div>
+            <div class="meta-item"><span class="meta-label">Created:</span> ${timeAgo(d.created_at)}</div>
+          </div>
+          ${d.lost_reason ? `<div class="meta-row"><div class="meta-item"><span class="meta-label">Lost Reason:</span> ${d.lost_reason}</div></div>` : ''}
+          <div class="drive-details" id="details-${d.drive_id}">
+            <h4>👥 Access List</h4>
+            <div id="access-list-${d.drive_id}"><span class="spinner"></span> Loading...</div>
+            <div class="form-row">
+              <input type="email" class="form-input" id="add-email-${d.drive_id}" placeholder="Add user email...">
+              <button class="btn btn-sm btn-primary" onclick="addUser('${d.drive_id}')">+ Add</button>
+            </div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // ─── Toggle Drive Details ───
+    async function toggleDriveDetails(driveId) {
+      const el = document.getElementById(`details-${driveId}`);
+      const isOpen = el.classList.contains('open');
+      if (isOpen) {
+        el.classList.remove('open');
+        return;
+      }
+      el.classList.add('open');
+
+      // Fetch full drive details
+      try {
+        const { data } = await apiFetch(`/api/status/${driveId}`);
+        const accessListEl = document.getElementById(`access-list-${driveId}`);
+        if (data.access_list && data.access_list.length > 0) {
+          const isOwner = (email) => email === data.owner_email;
+          accessListEl.innerHTML = data.access_list.map(a =>
+            `<span class="user-chip">
+              ${a.email} ${isOwner(a.email) ? '👑' : `<button class="remove-btn" onclick="removeUser('${driveId}', '${a.email}')" title="Remove">×</button>`}
+            </span>`
+          ).join('');
+        } else {
+          accessListEl.innerHTML = '<span style="color:var(--text-muted);font-size:13px">No users in access list.</span>';
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    // ─── API Actions ───
+    async function approveRequest(requestId, scope, leaseHours) {
+      try {
+        const body = { request_id: requestId, scope };
+        if (leaseHours) body.lease_hours = leaseHours;
+        const { status, data } = await apiFetch('/api/approve-request', {
+          method: 'POST', body: JSON.stringify(body)
+        });
+        if (status === 200) {
+          showToast(`Request ${requestId} approved (${scope})`, 'success');
+          refreshAll();
+        } else {
+          showToast(data.error || 'Approval failed', 'error');
+        }
+      } catch (e) { showToast('Network error', 'error'); }
+    }
+
+    async function denyRequest(requestId) {
+      try {
+        const { status, data } = await apiFetch('/api/deny-request', {
+          method: 'POST', body: JSON.stringify({ request_id: requestId })
+        });
+        if (status === 200) {
+          showToast(`Request ${requestId} denied`, 'info');
+          refreshAll();
+        } else {
+          showToast(data.error || 'Denial failed', 'error');
+        }
+      } catch (e) { showToast('Network error', 'error'); }
+    }
+
+    async function markLost(driveId) {
+      if (!confirm('⚠️ Mark this drive as LOST? All trust and pending requests will be revoked.')) return;
+      try {
+        const { status, data } = await apiFetch('/api/mark-lost', {
+          method: 'POST', body: JSON.stringify({ drive_id: driveId, reason: 'Marked lost from dashboard' })
+        });
+        if (status === 200) {
+          showToast('Drive marked as LOST. Kill switch activated.', 'error');
+          refreshAll();
+        } else {
+          showToast(data.error || 'Failed', 'error');
+        }
+      } catch (e) { showToast('Network error', 'error'); }
+    }
+
+    async function reactivate(driveId) {
+      try {
+        const { status, data } = await apiFetch('/api/reactivate', {
+          method: 'POST', body: JSON.stringify({ drive_id: driveId })
+        });
+        if (status === 200) {
+          showToast('Drive reactivated.', 'success');
+          refreshAll();
+        } else {
+          showToast(data.error || 'Failed', 'error');
+        }
+      } catch (e) { showToast('Network error', 'error'); }
+    }
+
+    async function addUser(driveId) {
+      const input = document.getElementById(`add-email-${driveId}`);
+      const email = input.value.trim();
+      if (!email) return;
+      try {
+        const { status, data } = await apiFetch('/api/sharing/add-user', {
+          method: 'POST', body: JSON.stringify({ drive_id: driveId, email })
+        });
+        if (status === 201) {
+          showToast(`User ${email} added.`, 'success');
+          input.value = '';
+          toggleDriveDetails(driveId); // Close
+          setTimeout(() => toggleDriveDetails(driveId), 100); // Reopen with updated data
+        } else {
+          showToast(data.error || 'Failed', 'error');
+        }
+      } catch (e) { showToast('Network error', 'error'); }
+    }
+
+    async function removeUser(driveId, email) {
+      try {
+        const { status, data } = await apiFetch('/api/sharing/remove-user', {
+          method: 'POST', body: JSON.stringify({ drive_id: driveId, email })
+        });
+        if (status === 200) {
+          showToast(`User ${email} removed.`, 'success');
+          toggleDriveDetails(driveId);
+          setTimeout(() => toggleDriveDetails(driveId), 100);
+        } else {
+          showToast(data.error || 'Failed', 'error');
+        }
+      } catch (e) { showToast('Network error', 'error'); }
+    }
+
+    // ─── Data Refresh ───
+    async function refreshAll() {
+      try {
+        const [drivesRes, pendingRes, healthRes] = await Promise.all([
+          apiFetch('/api/dashboard/drives'),
+          apiFetch('/api/dashboard/pending'),
+          apiFetch('/api/health')
+        ]);
+
+        if (drivesRes.status === 200) {
+          // Pause rendering drives if any details pane is open so we don't reset inputs
+          if (!document.querySelector('.drive-details.open')) {
+            renderDrives(drivesRes.data.drives || []);
+          }
+        }
+        if (pendingRes.status === 200) renderPending(pendingRes.data.pending || []);
+
+        // Update status indicator
+        document.getElementById('statusDot').style.background = 'var(--accent-emerald)';
+        document.getElementById('statusDot').style.boxShadow = '0 0 8px var(--accent-emerald)';
+        const h = healthRes.data;
+        document.getElementById('statusText').textContent =
+          `v${h.version || '2.0'} • ${h.drive_count || 0} drives • ${h.pending_count || 0} pending`;
+
+        // Render logs from all drives
+        await refreshLogs(drivesRes.data.drives || []);
+      } catch (e) {
+        document.getElementById('statusDot').style.background = 'var(--accent-rose)';
+        document.getElementById('statusDot').style.boxShadow = '0 0 8px var(--accent-rose)';
+        document.getElementById('statusText').textContent = 'Connection lost';
+        console.error('Refresh error:', e);
+      }
+    }
+
+    async function refreshLogs(drives) {
+      const logContainer = document.getElementById('logsList');
+      let allLogs = [];
+
+      // Fetch logs from each drive
+      for (const d of drives.slice(0, 10)) { // Limit to 10 drives for performance
+        try {
+          const { data } = await apiFetch(`/api/status/${d.drive_id}`);
+          if (data.recent_auth_log) {
+            allLogs.push(...data.recent_auth_log.map(l => ({
+              ...l,
+              drive_label: d.label || d.drive_id.slice(0, 8) + '…'
+            })));
+          }
+        } catch (e) { /* skip */ }
+      }
+
+      allLogs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      allLogs = allLogs.slice(0, 30);
+
+      if (allLogs.length === 0) {
+        logContainer.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">📋</div>
+            <div class="empty-state-text">No activity yet.</div>
+          </div>`;
+        return;
+      }
+
+      const resultColors = {
+        'GRANTED': 'var(--accent-emerald)',
+        'GRANTED_ONETIME': 'var(--accent-amber)',
+        'DENIED_LOST': 'var(--accent-rose)',
+        'DENIED_EMAIL': 'var(--accent-rose)',
+        'DENIED_FINGERPRINT': 'var(--accent-rose)',
+        'PENDING_NEW': 'var(--accent-amber)',
+        'PENDING_EXISTING': 'var(--accent-amber)',
+        'NOT_FOUND': 'var(--text-muted)'
+      };
+
+      logContainer.innerHTML = `
+        <table class="log-table">
+          <thead>
+            <tr><th>Time</th><th>Drive</th><th>Result</th><th>Email</th><th>IP</th></tr>
+          </thead>
+          <tbody>
+            ${allLogs.map(l => `
+              <tr>
+                <td>${timeAgo(l.timestamp)}</td>
+                <td>${l.drive_label}</td>
+                <td><span style="color:${resultColors[l.result] || 'var(--text-secondary)'};font-weight:600">${l.result}</span></td>
+                <td>${l.email || '—'}</td>
+                <td><span class="mono" style="font-size:11px">${l.ip || '—'}</span></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+
+    // ─── Manual refresh (no auto-polling) ───
+    async function doManualRefresh() {
+      const btn = document.getElementById('refreshBtn');
+      btn.classList.add('spinning');
+      btn.disabled = true;
+      await refreshAll();
+      setTimeout(() => {
+        btn.classList.remove('spinning');
+        btn.disabled = false;
+      }, 600);
+    }
+
+    // ─── Init: load once on page load ───
+    window.addEventListener('load', () => refreshAll());
+  </script>
+</body>
+</html>

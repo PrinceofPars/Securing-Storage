@@ -1,0 +1,14 @@
+# USB Killswitch v2 Client — Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# AES-256-GCM encryption and HKDF key derivation
+cryptography>=41.0.0
+
+# HTTP requests to backend API
+requests>=2.31.0
+
+# JWT token decoding / inspection
+PyJWT>=2.8.0
+
+# Modern desktop GUI framework (dark mode, widgets)
+customtkinter>=5.2.0
