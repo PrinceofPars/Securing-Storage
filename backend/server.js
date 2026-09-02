@@ -666,31 +666,7 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
       'SELECT * FROM trusted_devices WHERE drive_id = ? AND hardware_fingerprint = ?'
     ).get(drive_id, fingerprint_hash);
 
-    // ── Owner auto-trust: owner's device is auto-trusted forever on first auth ──
-    if (!trustedDevice && email && email === drive.owner_email) {
-      const nowUnix = Math.floor(Date.now() / 1000);
-      db.prepare(`
-        INSERT OR REPLACE INTO trusted_devices
-          (drive_id, hardware_fingerprint, user_email, trust_scope, expires_at, created_at)
-        VALUES (?, ?, ?, 'FOREVER', NULL, ?)
-      `).run(drive_id, fingerprint_hash, email, Date.now());
-
-      const leaseSeconds = LEASE_DAYS * 24 * 60 * 60;
-      const lease = generateLeaseToken(drive_id, fingerprint_hash, leaseSeconds);
-      logAuthEvent(drive_id, fingerprint_hash, email, 'GRANTED', req);
-
-      console.log(`👑  OWNER AUTO-TRUST: Drive ${drive_id} → device trusted forever`);
-
-      return res.status(200).json({
-        status:          'GRANTED',
-        cloud_key_share: drive.cloud_key_share,
-        lease_token:     lease.token,
-        expires_at:      lease.expiresAtISO,
-        expires_at_unix: lease.expiresAt,
-        drive_label:     drive.label,
-        trust_scope:     'FOREVER'
-      });
-    }
+    // Any machine that is not already in trusted_devices must be approved by the owner via QR / Web Portal
 
     if (trustedDevice) {
       const now = Math.floor(Date.now() / 1000);

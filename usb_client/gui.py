@@ -138,8 +138,11 @@ def generate_qr_ctk_image(data_str: str, size: int = 170) -> ctk.CTkImage:
     )
     qr.add_data(data_str)
     qr.make(fit=True)
-    img = qr.make_image(fill_color="white", back_color="#181d2c").convert('RGB')
-    return ctk.CTkImage(light_image=img, dark_image=img, size=(size, size))
+    qr_img = qr.make_image(fill_color="white", back_color="#181d2c")
+    # Extract underlying PIL.Image.Image if wrapped by PilImage
+    pil_img = qr_img.get_image() if hasattr(qr_img, 'get_image') else qr_img
+    pil_img = pil_img.convert('RGB')
+    return ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(size, size))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -509,12 +512,10 @@ class USBKillswitchApp(ctk.CTk):
         ctk.CTkLabel(inner, text="User / Owner Email",
                      font=ctk.CTkFont(size=12, weight="bold"),
                      text_color=COLORS['text_dim']).pack(anchor="w")
-        self.unlock_email = ctk.CTkEntry(inner, placeholder_text="you@example.com",
+        self.unlock_email = ctk.CTkEntry(inner, placeholder_text="Enter your email address",
                                          height=38, fg_color=COLORS['bg_input'],
                                          border_color=COLORS['border'], corner_radius=8)
         self.unlock_email.pack(fill="x", pady=(4, 12))
-        if config and config.get('owner_email'):
-            self.unlock_email.insert(0, config['owner_email'])
 
         # Fingerprint card
         fp_hash = fp_module.generate_fingerprint()
@@ -746,8 +747,17 @@ class USBKillswitchApp(ctk.CTk):
         self._qr_image_label = None
         self._qr_shown = False
 
+        # Generate and show QR Code immediately by default
+        try:
+            qr_img = generate_qr_ctk_image(approve_url, size=150)
+            self._qr_image_label = ctk.CTkLabel(self._qr_container, image=qr_img, text="")
+            self._qr_image_label.pack(padx=10, pady=10)
+            self._qr_shown = True
+        except Exception as e:
+            logger.warning(f"QR render init failed: {e}")
+
         self._qr_toggle_btn = ctk.CTkButton(
-            left_inner, text="📷 Click to Show QR Code", height=34,
+            left_inner, text="🙈 Hide QR Code" if self._qr_shown else "📷 Click to Show QR Code", height=34,
             font=ctk.CTkFont(size=12, weight="bold"),
             fg_color=COLORS['bg_input'], hover_color=COLORS['border'],
             text_color=COLORS['text'], corner_radius=8,
