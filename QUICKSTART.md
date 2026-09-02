@@ -44,10 +44,11 @@ npm install
 npm start
 ```
 
-Your server will be live with all web interfaces:
-- 🌐 **Web Dashboard (Desktop)**: `http://localhost:3000/dashboard`
-- 📱 **Mobile Approval Portal**: `http://localhost:3000/approve`
-- 🔑 **Google Sign-In Entry**: `http://localhost:3000/auth/google`
+### Live Deployed Backend Services
+- 🌐 **Web Dashboard**: `https://securing-storage.onrender.com/dashboard`
+- 📱 **Mobile Approval Portal**: `https://securing-storage.onrender.com/approve`
+- 🔑 **Google Sign-In Entry**: `https://securing-storage.onrender.com/auth/google`
+- 📡 **Health Check API**: `https://securing-storage.onrender.com/api/health`
 
 ---
 

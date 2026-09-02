@@ -77,7 +77,7 @@ CONFIG_FILE    = BASE_DIR / 'config.json'
 LOCAL_KEY_FILE = BASE_DIR / 'local_key.bin'
 VAULT_FILE     = BASE_DIR / 'vault.enc'
 LEASE_FILE     = BASE_DIR / 'lease.tok'
-DEFAULT_API    = os.environ.get('USB_API_URL', 'http://localhost:3000')
+DEFAULT_API    = os.environ.get('USB_API_URL', 'https://securing-storage.onrender.com')
 
 def set_base_dir(new_path: Path):
     global BASE_DIR, CONFIG_FILE, LOCAL_KEY_FILE, VAULT_FILE, LEASE_FILE
