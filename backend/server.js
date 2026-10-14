@@ -1284,45 +1284,68 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
       });
     }
 
+    // ──────────────────────────────────────────────
+    // 1. Direct Access: If email is owner or in access list, directly grant access
+    // ──────────────────────────────────────────────
     const isOwner = (email === drive.owner_email.toLowerCase());
     const accessEntry = db.prepare(
       'SELECT allowed_email FROM access_list WHERE drive_id = ? AND allowed_email = ?'
     ).get(drive_id, email);
     const isAllowedUser = Boolean(accessEntry);
 
-    if (!isOwner && !isAllowedUser) {
-      logAuthEvent(drive_id, fingerprint_hash, email, 'DENIED_UNAUTHORIZED_EMAIL', req);
-      console.warn(`🛑 Level 1 Filter Blocked: Email ${email} is not authorized for drive ${drive_id}`);
-      return res.status(403).json({
-        status:  'DENIED',
-        message: `Account '${email}' is not authorized. You must be the drive owner or invited to this drive's access list.`
+    if (isOwner || isAllowedUser) {
+      const leaseSeconds = LEASE_DAYS * 24 * 60 * 60;
+      const lease = generateLeaseToken(drive_id, fingerprint_hash, leaseSeconds);
+
+      // Auto-register device as trusted for this authorized user so future sessions on this machine are trusted
+      const existingDevice = db.prepare(
+        'SELECT id FROM trusted_devices WHERE drive_id = ? AND hardware_fingerprint = ?'
+      ).get(drive_id, fingerprint_hash);
+
+      const now = Math.floor(Date.now() / 1000);
+      if (!existingDevice) {
+        db.prepare(`
+          INSERT INTO trusted_devices (drive_id, hardware_fingerprint, trust_scope, registered_at, expires_at)
+          VALUES (?, ?, 'LEASE', ?, ?)
+        `).run(drive_id, fingerprint_hash, now, now + leaseSeconds);
+      } else {
+        db.prepare(`
+          UPDATE trusted_devices SET expires_at = ? WHERE id = ?
+        `).run(now + leaseSeconds, existingDevice.id);
+      }
+
+      logAuthEvent(drive_id, fingerprint_hash, email, 'GRANTED', req);
+      console.log(`✅  GRANTED (Direct Access for ${isOwner ? 'Owner' : 'Authorized User'}): Drive ${drive_id} → ${email}`);
+
+      return res.status(200).json({
+        status:          'GRANTED',
+        cloud_key_share: drive.cloud_key_share,
+        lease_token:     lease.token,
+        expires_at:      lease.expiresAtISO,
+        expires_at_unix: lease.expiresAt,
+        drive_label:     drive.label,
+        trust_scope:     'LEASE'
       });
     }
 
     // ──────────────────────────────────────────────
-    // Filter Level 2: Verify Host Hardware Fingerprint
+    // 2. Check if this hardware was already authorized by owner
     // ──────────────────────────────────────────────
     const trustedDevice = db.prepare(
       'SELECT * FROM trusted_devices WHERE drive_id = ? AND hardware_fingerprint = ?'
     ).get(drive_id, fingerprint_hash);
 
-    // Any machine that is not already in trusted_devices must be approved by the owner via QR / Web Portal
-
     if (trustedDevice) {
       const now = Math.floor(Date.now() / 1000);
 
-      // Check if trust has expired
       if (trustedDevice.trust_scope === 'LEASE' && trustedDevice.expires_at && now >= trustedDevice.expires_at) {
-        // Lease expired — remove trust and treat as unknown
         db.prepare('DELETE FROM trusted_devices WHERE id = ?').run(trustedDevice.id);
         console.log(`⏰  Trust expired for device on drive ${drive_id}`);
-        // Fall through to pending approval flow below
       } else if (trustedDevice.trust_scope === 'ONE_TIME') {
-        // One-time: grant access and immediately revoke trust
         db.prepare('DELETE FROM trusted_devices WHERE id = ?').run(trustedDevice.id);
         console.log(`🔑  One-time trust consumed for drive ${drive_id}`);
 
-        const leaseSeconds = 12 * 60 * 60; // 12 hours for one-time
+        const leaseSeconds = 12 * 60 * 60;
         const lease = generateLeaseToken(drive_id, fingerprint_hash, leaseSeconds);
         logAuthEvent(drive_id, fingerprint_hash, email, 'GRANTED_ONETIME', req);
 
@@ -1336,19 +1359,12 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
           trust_scope:     'ONE_TIME'
         });
       } else {
-        // FOREVER or active LEASE — grant access
-        let leaseSeconds;
-        if (trustedDevice.trust_scope === 'FOREVER') {
-          leaseSeconds = LEASE_DAYS * 24 * 60 * 60;
-        } else {
-          // Remaining lease time
-          leaseSeconds = Math.max(trustedDevice.expires_at - now, 3600);
-        }
+        let leaseSeconds = trustedDevice.trust_scope === 'FOREVER'
+          ? LEASE_DAYS * 24 * 60 * 60
+          : Math.max(trustedDevice.expires_at - now, 3600);
 
         const lease = generateLeaseToken(drive_id, fingerprint_hash, leaseSeconds);
         logAuthEvent(drive_id, fingerprint_hash, email, 'GRANTED', req);
-
-        console.log(`✅  GRANTED: Drive ${drive_id} → ${trustedDevice.trust_scope}`);
 
         return res.status(200).json({
           status:          'GRANTED',
@@ -1361,6 +1377,11 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
         });
       }
     }
+
+    // ──────────────────────────────────────────────
+    // 3. Unauthorized User: Route to out-of-band approval screen
+    // ──────────────────────────────────────────────
+    console.log(`⏳ Unauthorized user ${email} on device ${fingerprint_hash}. Routing to out-of-band approval...`);
 
     // ── Unknown device: Create pending approval request ──
 

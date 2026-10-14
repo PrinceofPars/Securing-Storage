@@ -315,7 +315,7 @@ class USBKillswitchApp(ctk.CTk):
             logger.debug(f"Focus window exception: {e}")
 
     def _try_startup_auto_unlock(self) -> bool:
-        """Check for active offline lease token matching this host's hardware fingerprint."""
+        """Check if this host's hardware fingerprint matches (via local lease or trusted server)."""
         try:
             config = load_config()
             k_local = load_local_key()
@@ -326,29 +326,42 @@ class USBKillswitchApp(ctk.CTk):
             self._current_fingerprint = fp_hash
             drive_id = config.get('drive_id', '')
 
+            # 1. Check local offline lease first (offline or online)
             lease = lm.load_lease_token(LEASE_FILE, k_local, drive_id, vault_path=VAULT_FILE)
-            if not lease:
-                return False
+            if lease:
+                now = int(time.time())
+                expires_at = lease.get('expires_at', 0)
+                lease_fp = lease.get('fingerprint', '')
+                cks = lease.get('cloud_key_share')
 
-            now = int(time.time())
-            expires_at = lease.get('expires_at', 0)
-            lease_fp = lease.get('fingerprint', '')
-            cks = lease.get('cloud_key_share')
+                if cks and now < expires_at and fp_hash.lower() == lease_fp.lower():
+                    logger.info("Valid offline lease active for this host. Directly opening workspace.")
+                    self._show_splash_screen("Authorizing hardware identity...")
+                    self.after(50, lambda: self._load_vault_workspace(
+                        k_local, cks, "Offline Lease", "Authorized offline session active"
+                    ))
+                    return True
 
-            if not cks or now >= expires_at:
-                logger.info("Startup check: lease token absent or expired.")
-                return False
+            # 2. Check if online and this hardware fingerprint is already trusted on server
+            api_url = get_api_url(config)
+            owner_email = config.get('owner_email') or config.get('user_email')
+            if owner_email and lm.check_internet_connectivity():
+                try:
+                    res, cks, msg, req_id = lm.online_auth(
+                        api_url, drive_id, fp_hash, owner_email, k_local,
+                        lease_path=LEASE_FILE, vault_path=VAULT_FILE
+                    )
+                    if res == 'GRANTED' and cks:
+                        logger.info("Hardware fingerprint verified via online trusted device. Directly opening workspace.")
+                        self._show_splash_screen("Hardware identity verified...")
+                        self.after(50, lambda: self._load_vault_workspace(
+                            k_local, cks, "Online Verified", "Hardware identity verified"
+                        ))
+                        return True
+                except Exception as oe:
+                    logger.debug(f"Online auto-check failed: {oe}")
 
-            if fp_hash.lower() != lease_fp.lower():
-                logger.info("Startup check: hardware fingerprint mismatch.")
-                return False
-
-            logger.info("Valid offline lease token active for this host machine. Bypassing login.")
-            self._show_splash_screen("Authorizing hardware identity...")
-            self.after(50, lambda: self._load_vault_workspace(
-                k_local, cks, "Offline Lease", "Authorized offline session active"
-            ))
-            return True
+            return False
 
         except Exception as e:
             logger.warning(f"Startup auto-unlock error: {e}")
@@ -396,33 +409,26 @@ class USBKillswitchApp(ctk.CTk):
                      text_color=COLORS['text']).pack(anchor="w")
 
         auth_subtext = ctk.CTkLabel(inner,
-                                    text="Authenticate with Google to verify owner identity, or enter your email manually below:",
+                                    text="Sign in with your Google Account to establish verified owner identity:",
                                     font=ctk.CTkFont(size=11),
                                     text_color=COLORS['text_muted'])
         auth_subtext.pack(anchor="w", pady=(2, 6))
 
         # Google Sign-In Action
+        self._init_owner_email = None
         self.init_google_btn = ctk.CTkButton(
-            inner, text="Authenticate via Google Account", height=36,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=COLORS['bg_input'], hover_color=COLORS['bg_hover'],
-            border_width=1, border_color=COLORS['border'],
-            text_color=COLORS['text'], corner_radius=6,
+            inner, text="  Continue with Google", height=38,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#ffffff", hover_color="#f1f5f9",
+            text_color="#1f2937", corner_radius=6,
             command=self._launch_init_google_auth
         )
-        self.init_google_btn.pack(fill="x", pady=(0, 8))
+        self.init_google_btn.pack(fill="x", pady=(0, 6))
 
-        self.init_email_badge = ctk.CTkLabel(inner, text="Status: Awaiting owner verification",
+        self.init_email_badge = ctk.CTkLabel(inner, text="Status: Awaiting Google authentication",
                                              font=ctk.CTkFont(family="Consolas", size=10),
                                              text_color=COLORS['text_muted'])
-        self.init_email_badge.pack(anchor="w", pady=(0, 6))
-
-        self.init_email = ctk.CTkEntry(inner, placeholder_text="Owner email address (e.g. owner@domain.com)",
-                                       height=36, fg_color=COLORS['bg_input'],
-                                       border_color=COLORS['border'], corner_radius=6,
-                                       font=ctk.CTkFont(size=12))
-        self.init_email.pack(fill="x", pady=(0, 14))
-        self.init_email.bind("<Return>", lambda e: self.init_label.focus_set())
+        self.init_email_badge.pack(anchor="w", pady=(0, 14))
 
         # 2. Vault Label
         ctk.CTkLabel(inner, text="Storage Unit Label",
@@ -515,10 +521,10 @@ class USBKillswitchApp(ctk.CTk):
 
     def _on_google_verified(self, email: str):
         self._focus_window()
-        self.init_email.delete(0, 'end')
-        self.init_email.insert(0, email)
-        self.init_email_badge.configure(text=f"Status: Verified as {email}", text_color=COLORS['success'])
-        self.init_google_btn.configure(text=f"Authenticated as {email}", fg_color=COLORS['bg_hover'])
+        self._init_owner_email = email
+        self.init_email_badge.configure(text=f"✓ Verified Owner: {email}", text_color=COLORS['success'])
+        self.init_google_btn.configure(text=f"✓ Authenticated as {email}", fg_color=COLORS['bg_hover'], text_color=COLORS['text'])
+        self.init_status.configure(text=f"Owner identity verified: {email}", text_color=COLORS['success'])
 
     def _open_existing_vault(self):
         path = filedialog.askdirectory(title="Select folder containing vault.enc")
@@ -545,12 +551,13 @@ class USBKillswitchApp(ctk.CTk):
 
     def _do_init(self):
         api_url = get_api_url()
-        email   = self.init_email.get().strip()
+        email   = getattr(self, '_init_owner_email', None)
         label   = self.init_label.get().strip() or 'Secure Storage Vault'
         folder  = self._selected_folder
 
         if not email:
-            self.init_status.configure(text="Owner email address is required.", text_color=COLORS['danger'])
+            self.init_status.configure(text="Please click 'Continue with Google' to verify owner identity.", text_color=COLORS['warning'])
+            self._launch_init_google_auth()
             return
         if not folder or not Path(folder).is_dir():
             self.init_status.configure(text="Please select a valid source directory to encrypt.", text_color=COLORS['danger'])
@@ -705,33 +712,6 @@ class USBKillswitchApp(ctk.CTk):
         inner = ctk.CTkFrame(card, fg_color="transparent")
         inner.pack(fill="x", padx=24, pady=20)
 
-        # Email Input
-        ctk.CTkLabel(inner, text="User Identity (Email)",
-                     font=ctk.CTkFont(size=12, weight="bold"),
-                     text_color=COLORS['text']).pack(anchor="w")
-
-        self.unlock_email = ctk.CTkEntry(inner, placeholder_text="user@domain.com",
-                                         height=36, fg_color=COLORS['bg_input'],
-                                         border_color=COLORS['border'], corner_radius=6,
-                                         font=ctk.CTkFont(size=12))
-        self.unlock_email.pack(fill="x", pady=(4, 14))
-        self.unlock_email.bind("<Return>", lambda e: self._do_unlock())
-
-        default_email = ''
-        if config:
-            default_email = config.get('owner_email') or config.get('user_email', '')
-        if not default_email and config:
-            k_local_peek = load_local_key()
-            if k_local_peek:
-                try:
-                    lease_peek = lm.load_lease_token(LEASE_FILE, k_local_peek, config.get('drive_id', ''), vault_path=VAULT_FILE)
-                    if lease_peek and lease_peek.get('user_email'):
-                        default_email = lease_peek['user_email']
-                except Exception:
-                    pass
-        if default_email:
-            self.unlock_email.insert(0, default_email)
-
         # Host Hardware Identity Inspection Card
         fp_hash = fp_module.generate_fingerprint()
         self._current_fingerprint = fp_hash
@@ -773,34 +753,31 @@ class USBKillswitchApp(ctk.CTk):
                      font=ctk.CTkFont(size=11),
                      text_color=COLORS['text_muted']).pack(anchor="w")
 
-        # Container & Lease Verification State
+        # Container & Verification State
         meta = ce.inspect_vault_header(VAULT_FILE)
         v_size_mb = (meta.get('vault_size', 0) / (1024 * 1024)) if (meta and meta.get('valid')) else 0
         container_spec = f"Encapsulated Container: {v_size_mb:.2f} MB" if meta and meta.get('valid') else "Container: Ready"
 
         status_bar = ctk.CTkFrame(inner, fg_color="transparent")
-        status_bar.pack(fill="x", pady=(0, 2))
+        status_bar.pack(fill="x", pady=(0, 14))
 
         ctk.CTkLabel(status_bar, text=container_spec,
                      font=ctk.CTkFont(size=11),
                      text_color=COLORS['text_dim']).pack(side="left")
 
-        # Lease Status Tag
-        k_local = load_local_key()
-        if config and k_local:
-            try:
-                info = lm.get_lease_info(LEASE_FILE, k_local, config.get('drive_id', ''), vault_path=VAULT_FILE)
-                if info and not info['is_expired']:
-                    lease_str = f"Offline Lease: {info['days_left']}d {info['hours_left']}h remaining"
-                    ctk.CTkLabel(status_bar, text=lease_str,
-                                 font=ctk.CTkFont(size=11, weight="bold"),
-                                 text_color=COLORS['success']).pack(side="right")
-                elif info and info['is_expired']:
-                    ctk.CTkLabel(status_bar, text="Lease: Expired (Online Check Required)",
-                                 font=ctk.CTkFont(size=11),
-                                 text_color=COLORS['warning']).pack(side="right")
-            except Exception:
-                pass
+        ctk.CTkLabel(status_bar, text="Hardware Mismatch — Verification Required",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=COLORS['warning']).pack(side="right")
+
+        # Google Sign-In Action (No manual email entry)
+        self.btn_gate_google = ctk.CTkButton(
+            inner, text="  Continue with Google", height=42,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#ffffff", hover_color="#f1f5f9",
+            text_color="#1f2937", corner_radius=6,
+            command=self._launch_gate_google_auth
+        )
+        self.btn_gate_google.pack(fill="x", pady=(4, 0))
 
         # Message / Status Feedback
         self.unlock_status = ctk.CTkLabel(frame, text="",
@@ -808,48 +785,79 @@ class USBKillswitchApp(ctk.CTk):
                                           text_color=COLORS['text_dim'])
         self.unlock_status.pack(pady=(0, 6))
 
-        # Action Buttons
-        btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        btn_frame.pack(fill="x")
-
-        self.btn_unlock = ctk.CTkButton(btn_frame, text="Unlock Vault", height=40,
-                                        font=ctk.CTkFont(size=13, weight="bold"),
-                                        fg_color=COLORS['accent'], hover_color=COLORS['accent_hover'],
-                                        corner_radius=6,
-                                        command=self._do_unlock)
-        self.btn_unlock.pack(fill="x", pady=(0, 8))
-
-        bottom_row = ctk.CTkFrame(btn_frame, fg_color="transparent")
-        bottom_row.pack(fill="x")
-
-        ctk.CTkButton(bottom_row, text="Change Working Vault...", height=28,
-                      font=ctk.CTkFont(size=11),
-                      fg_color="transparent", border_width=1,
-                      border_color=COLORS['border'], hover_color=COLORS['bg_card'],
-                      text_color=COLORS['text_dim'], corner_radius=4,
-                      command=self._open_existing_vault).pack(side="left")
+        # Bottom Actions Bar
+        bottom_row = ctk.CTkFrame(frame, fg_color="transparent")
+        bottom_row.pack(fill="x", pady=(4, 0))
 
         ctk.CTkButton(bottom_row, text="Re-initialize", height=28,
                       font=ctk.CTkFont(size=11),
                       fg_color="transparent", border_width=1,
                       border_color=COLORS['border'], hover_color=COLORS['bg_card'],
                       text_color=COLORS['text_dim'], corner_radius=4,
-                      command=self._show_init_screen).pack(side="right")
+                      command=self._confirm_reinitialize).pack(side="left")
 
-    def _do_unlock(self):
+        ctk.CTkButton(bottom_row, text="Change Working Vault...", height=28,
+                      font=ctk.CTkFont(size=11),
+                      fg_color="transparent", border_width=1,
+                      border_color=COLORS['border'], hover_color=COLORS['bg_card'],
+                      text_color=COLORS['text_dim'], corner_radius=4,
+                      command=self._open_existing_vault).pack(side="right")
+
+    def _confirm_reinitialize(self):
+        if messagebox.askyesno("Re-initialize Vault", "Are you sure you want to re-initialize this drive?\n\nExisting encrypted vault data will be replaced."):
+            self._show_init_screen()
+
+    def _launch_gate_google_auth(self):
         config = load_config()
         if not config:
             self.unlock_status.configure(text="Vault configuration missing or corrupted.", text_color=COLORS['danger'])
             return
 
-        email = self.unlock_email.get().strip()
-        if not email:
-            self.unlock_status.configure(text="User email is required.", text_color=COLORS['danger'])
-            return
+        api_url = get_api_url(config)
+        import secrets
+        session_id = f"gate_{secrets.token_hex(8)}"
+        auth_url = f"{api_url.rstrip('/')}/auth/google?session_id={session_id}"
+        webbrowser.open(auth_url)
 
-        self.unlock_status.configure(text="Authorizing credentials...", text_color=COLORS['warning'])
-        self.btn_unlock.configure(state="disabled")
-        self.update_idletasks()
+        self.btn_gate_google.configure(state="disabled", text="  Awaiting Google Sign-In in Browser...")
+        self.unlock_status.configure(text="Complete Google sign-in in your browser window...", text_color=COLORS['warning'])
+
+        def poll_google():
+            import requests
+            start_t = time.time()
+            while time.time() - start_t < 180:
+                try:
+                    r = requests.get(f"{api_url.rstrip('/')}/api/auth/google/check-session?session_id={session_id}", timeout=5)
+                    if r.ok:
+                        data = r.json()
+                        if data.get('authenticated') and data.get('email'):
+                            verified_email = data['email']
+                            self.after(0, lambda e=verified_email: self._on_gate_google_verified(e))
+                            return
+                except Exception:
+                    pass
+                time.sleep(1)
+            self.after(0, self._on_gate_google_timeout)
+
+        threading.Thread(target=poll_google, daemon=True).start()
+
+    def _on_gate_google_verified(self, email: str):
+        self._focus_window()
+        self.btn_gate_google.configure(text=f"  ✓ Verified: {email}", state="disabled")
+        self.unlock_status.configure(text=f"Verified as {email}. Checking access permissions...", text_color=COLORS['info'])
+        self._do_unlock_with_email(email)
+
+    def _on_gate_google_timeout(self):
+        if hasattr(self, 'btn_gate_google') and self.btn_gate_google.winfo_exists():
+            self.btn_gate_google.configure(state="normal", text="  Continue with Google")
+        if hasattr(self, 'unlock_status') and self.unlock_status.winfo_exists():
+            self.unlock_status.configure(text="Authentication timed out. Click to try again.", text_color=COLORS['danger'])
+
+    def _do_unlock_with_email(self, email: str):
+        config = load_config()
+        if not config:
+            self._on_unlock_failed("Vault configuration missing or corrupted.")
+            return
 
         def do_auth():
             try:
@@ -859,7 +867,7 @@ class USBKillswitchApp(ctk.CTk):
                     return
 
                 fp       = self._current_fingerprint
-                api_url  = config.get('api_url', DEFAULT_API)
+                api_url  = get_api_url(config)
                 drive_id = config['drive_id']
 
                 result, cks, msg, was_online, request_id = lm.authenticate(
@@ -893,8 +901,8 @@ class USBKillswitchApp(ctk.CTk):
         threading.Thread(target=do_auth, daemon=True).start()
 
     def _on_unlock_failed(self, msg: str):
-        if hasattr(self, 'btn_unlock') and self.btn_unlock.winfo_exists():
-            self.btn_unlock.configure(state="normal")
+        if hasattr(self, 'btn_gate_google') and self.btn_gate_google.winfo_exists():
+            self.btn_gate_google.configure(state="normal", text="  Continue with Google")
         if hasattr(self, 'unlock_status') and self.unlock_status.winfo_exists():
             self.unlock_status.configure(text=msg, text_color=COLORS['danger'])
 
@@ -1225,7 +1233,7 @@ class USBKillswitchApp(ctk.CTk):
                       corner_radius=4,
                       command=self._do_lock_and_save).pack(side="right", padx=(6, 0))
 
-        ctk.CTkButton(top_inner, text="Discard & Lock", height=32, width=110,
+        ctk.CTkButton(top_inner, text="Discard & Exit", height=32, width=110,
                       font=ctk.CTkFont(size=11),
                       fg_color=COLORS['danger_bg'], hover_color=COLORS['danger_hover'],
                       border_width=1, border_color=COLORS['danger'],
@@ -1587,8 +1595,8 @@ class USBKillswitchApp(ctk.CTk):
         if not self.session.get('unlocked'):
             return
 
-        if not messagebox.askyesno("Discard Changes",
-                                    "Discard all working file modifications and securely erase temporary session data?"):
+        if not messagebox.askyesno("Discard & Exit",
+                                    "Discard all working file modifications, securely erase temporary session data, and exit?"):
             return
 
         self.ws_status_text.configure(text="WIPING SESSION...", text_color=COLORS['danger'])
@@ -1610,9 +1618,17 @@ class USBKillswitchApp(ctk.CTk):
             'is_full_extract': False, 'unlock_time': None, 'request_id': None
         }
         if self._timer_id:
-            self.after_cancel(self._timer_id)
+            try:
+                self.after_cancel(self._timer_id)
+            except Exception:
+                pass
             self._timer_id = None
-        self._show_unlock_screen()
+        self._poll_stop.set()
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        sys.exit(0)
 
     def _start_timer(self):
         if not self.session.get('unlocked'):
