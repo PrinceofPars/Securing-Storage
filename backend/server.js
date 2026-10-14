@@ -182,6 +182,8 @@ app.use(morgan('short'));
 
 // Serve static dashboard files
 app.use('/dashboard', express.static(path.join(__dirname, 'public')));
+app.get('/privacy', (req, res) => res.sendFile(path.join(__dirname, 'public', 'privacy.html')));
+app.get('/terms', (req, res) => res.sendFile(path.join(__dirname, 'public', 'terms.html')));
 
 // Global rate limiter — 500 requests per 15 minutes per IP
 const globalLimiter = rateLimit({
