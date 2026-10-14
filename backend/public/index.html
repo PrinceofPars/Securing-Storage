@@ -1,469 +1,685 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>USB Killswitch — Admin Dashboard</title>
-  <meta name="description" content="Remote-Killable Encrypted USB Drive System — Admin & Approval Dashboard">
+  <title>USB Killswitch — Admin Console</title>
+  <meta name="description" content="Cryptographic hardware key vault and access management console">
+  <!-- Immediate theme bootstrap to prevent FOUC -->
+  <script>
+    (function() {
+      const savedTheme = localStorage.getItem('theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', savedTheme);
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     /* ═══════════════════════════════════════════════
-       CSS Design System — Dark Glassmorphism Theme
+       Design System — Anti-AI Engineered Console
        ═══════════════════════════════════════════════ */
 
+    /* DARK MODE (Default) — Precise, matte, industrial */
+    :root,
+    [data-theme="dark"] {
+      color-scheme: dark;
+      accent-color: #6366f1;
+
+      --bg-canvas:        #0c0e14;
+      --bg-surface:       #13161f;
+      --bg-surface-elev:  #181c27;
+      --bg-subtle:        #10131a;
+      --bg-hover:         #1d2230;
+
+      --border-base:      #232838;
+      --border-subtle:    #1b1f2b;
+      --border-focus:     #6366f1;
+
+      --text-main:        #f1f5f9;
+      --text-muted:       #8a95a5;
+      --text-dim:         #576275;
+
+      --accent:           #6366f1;
+      --accent-hover:     #4f46e5;
+      --accent-subtle:    rgba(99, 102, 241, 0.12);
+      --accent-border:    rgba(99, 102, 241, 0.28);
+
+      --status-ok:        #10b981;
+      --status-ok-bg:     rgba(16, 185, 129, 0.1);
+      --status-ok-bd:     rgba(16, 185, 129, 0.25);
+
+      --status-err:       #ef4444;
+      --status-err-bg:    rgba(239, 68, 68, 0.1);
+      --status-err-bd:    rgba(239, 68, 68, 0.25);
+
+      --status-warn:      #f59e0b;
+      --status-warn-bg:   rgba(245, 158, 11, 0.1);
+      --status-warn-bd:   rgba(245, 158, 11, 0.25);
+
+      --status-info:      #0ea5e9;
+      --status-info-bg:   rgba(14, 165, 233, 0.1);
+      --status-info-bd:   rgba(14, 165, 233, 0.25);
+
+      --shadow-sm:        0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-panel:     0 2px 8px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.2);
+      --shadow-btn:       0 1px 2px rgba(0, 0, 0, 0.25);
+
+      --grid-pattern:     radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+    }
+
+    /* LIGHT MODE — Editorial Light Ivory with Royal Indigo */
+    [data-theme="light"] {
+      color-scheme: light;
+      accent-color: #3730a3;
+
+      --bg-canvas:        #faf7f2; /* Pure warm ivory */
+      --bg-surface:       #ffffff;
+      --bg-surface-elev:  #f5f1ea;
+      --bg-subtle:        #f3efe7;
+      --bg-hover:         #eeece4;
+
+      --border-base:      #e2dcd2;
+      --border-subtle:    #ebe5dc;
+      --border-focus:     #3730a3;
+
+      --text-main:        #1c1917; /* Deep stone */
+      --text-muted:       #57534e;
+      --text-dim:         #8c857b;
+
+      --accent:           #3730a3;
+      --accent-hover:     #312e81;
+      --accent-subtle:    #eef2ff;
+      --accent-border:    #c7d2fe;
+
+      --status-ok:        #047857;
+      --status-ok-bg:     #ecfdf5;
+      --status-ok-bd:     #a7f3d0;
+
+      --status-err:       #b91c1c;
+      --status-err-bg:    #fef2f2;
+      --status-err-bd:    #fecaca;
+
+      --status-warn:      #b45309;
+      --status-warn-bg:   #fffbeb;
+      --status-warn-bd:   #fde68a;
+
+      --status-info:      #0369a1;
+      --status-info-bg:   #f0f9ff;
+      --status-info-bd:   #bae6fd;
+
+      --shadow-sm:        0 1px 2px rgba(28, 25, 23, 0.05);
+      --shadow-panel:     0 1px 3px rgba(28, 25, 23, 0.04), 0 6px 18px -4px rgba(44, 38, 30, 0.06);
+      --shadow-btn:       0 1px 2px rgba(28, 25, 23, 0.08);
+
+      --grid-pattern:     radial-gradient(rgba(28, 25, 23, 0.04) 1px, transparent 1px);
+    }
+
+    /* Common System Tokens */
     :root {
-      --bg-primary:       #0a0e1a;
-      --bg-secondary:     #111827;
-      --bg-card:          rgba(17, 24, 39, 0.65);
-      --bg-card-hover:    rgba(30, 41, 59, 0.7);
-      --bg-glass:         rgba(255, 255, 255, 0.04);
-      --bg-glass-hover:   rgba(255, 255, 255, 0.07);
-      --border-glass:     rgba(255, 255, 255, 0.08);
-      --border-active:    rgba(99, 102, 241, 0.4);
+      --radius-xs: 4px;
+      --radius-sm: 6px;
+      --radius-md: 8px;
+      --radius-lg: 10px;
 
-      --text-primary:     #f1f5f9;
-      --text-secondary:   #94a3b8;
-      --text-muted:       #64748b;
-
-      --accent-indigo:    #6366f1;
-      --accent-violet:    #8b5cf6;
-      --accent-emerald:   #10b981;
-      --accent-rose:      #f43f5e;
-      --accent-amber:     #f59e0b;
-      --accent-sky:       #0ea5e9;
-      --accent-orange:    #f97316;
-
-      --gradient-primary: linear-gradient(135deg, #6366f1, #8b5cf6);
-      --gradient-danger:  linear-gradient(135deg, #f43f5e, #e11d48);
-      --gradient-success: linear-gradient(135deg, #10b981, #059669);
-
-      --shadow-card:      0 4px 24px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2);
-      --shadow-glow:      0 0 30px rgba(99, 102, 241, 0.15);
-      --shadow-btn:       0 2px 12px rgba(99, 102, 241, 0.3);
-
-      --radius-sm:        8px;
-      --radius-md:        12px;
-      --radius-lg:        16px;
-      --radius-xl:        20px;
-
-      --font:             'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
-      font-family: var(--font);
-      background: var(--bg-primary);
-      color: var(--text-primary);
+      font-family: var(--font-sans);
+      background-color: var(--bg-canvas);
+      background-image: var(--grid-pattern);
+      background-size: 24px 24px;
+      color: var(--text-main);
       min-height: 100vh;
       overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      transition: background-color 0.2s ease, color 0.2s ease;
     }
 
-    /* Background gradient orbs */
-    body::before, body::after {
-      content: '';
-      position: fixed;
-      border-radius: 50%;
-      filter: blur(120px);
-      z-index: -1;
-      opacity: 0.4;
-    }
-    body::before {
-      width: 600px; height: 600px;
-      background: radial-gradient(circle, rgba(99, 102, 241, 0.2), transparent 70%);
-      top: -150px; right: -100px;
-    }
-    body::after {
-      width: 500px; height: 500px;
-      background: radial-gradient(circle, rgba(139, 92, 246, 0.15), transparent 70%);
-      bottom: -100px; left: -50px;
-    }
-
-    /* ─── Header ─── */
-    .header {
-      background: var(--bg-glass);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      border-bottom: 1px solid var(--border-glass);
-      padding: 16px 32px;
+    /* ─── Top Navigation Bar ─── */
+    .topbar {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-base);
+      padding: 0 28px;
+      height: 56px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       position: sticky;
       top: 0;
-      z-index: 100;
+      z-index: 50;
     }
-    .header-left {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-    }
-    .header-logo {
-      width: 36px; height: 36px;
-      background: var(--gradient-primary);
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 18px;
-      box-shadow: var(--shadow-btn);
-    }
-    .header h1 {
-      font-size: 18px;
-      font-weight: 700;
-      letter-spacing: -0.3px;
-    }
-    .header h1 span { color: var(--accent-indigo); }
-    .header-status {
+
+    .topbar-left {
       display: flex;
       align-items: center;
       gap: 16px;
     }
-    .status-dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      background: var(--accent-emerald);
-      box-shadow: 0 0 8px var(--accent-emerald);
-      animation: pulse-dot 2s ease-in-out infinite;
+
+    .brand-mark {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      color: inherit;
     }
-    @keyframes pulse-dot {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
-    }
-    .status-text {
-      font-size: 13px;
-      color: var(--text-secondary);
-    }
-    .admin-key-input {
-      background: var(--bg-glass);
-      border: 1px solid var(--border-glass);
+
+    .brand-icon {
+      width: 28px;
+      height: 28px;
+      background: var(--bg-surface-elev);
+      border: 1px solid var(--border-base);
       border-radius: var(--radius-sm);
-      padding: 8px 14px;
-      color: var(--text-primary);
-      font-family: var(--font);
-      font-size: 13px;
-      width: 240px;
-      outline: none;
-      transition: border-color 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent);
     }
-    .admin-key-input:focus {
-      border-color: var(--accent-indigo);
+
+    .brand-name {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
-    .admin-key-input::placeholder {
+
+    .brand-version {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      padding: 1px 5px;
+      border-radius: var(--radius-xs);
+      font-weight: 500;
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* System Status Dot */
+    .system-health {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 12px;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      padding: 4px 10px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+    }
+
+    .led-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--status-ok);
+      box-shadow: 0 0 0 2px var(--status-ok-bd);
+    }
+
+    /* Auth Badge */
+    .user-tag {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 10px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      font-family: var(--font-mono);
       color: var(--text-muted);
     }
-
-    /* ─── Layout ─── */
-    .container {
-      max-width: 1400px;
-      margin: 0 auto;
-      padding: 24px 32px;
+    .user-tag strong {
+      color: var(--text-main);
+      font-weight: 600;
     }
-
-    /* ─── Tab Navigation ─── */
-    .tabs {
-      display: flex;
-      gap: 4px;
-      margin-bottom: 24px;
-      background: var(--bg-glass);
-      border-radius: var(--radius-md);
-      padding: 4px;
-      border: 1px solid var(--border-glass);
-      width: fit-content;
+    .user-tag a {
+      color: var(--status-err);
+      text-decoration: none;
+      font-size: 11px;
+      margin-left: 4px;
+      padding-left: 6px;
+      border-left: 1px solid var(--border-subtle);
+      transition: opacity 0.15s;
     }
-    .tab-btn {
-      padding: 10px 20px;
-      border: none;
-      background: transparent;
-      color: var(--text-secondary);
-      font-family: var(--font);
-      font-size: 13px;
-      font-weight: 500;
+    .user-tag a:hover { opacity: 0.8; }
+
+    /* Interactive Action Controls */
+    .action-ctrl {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-base);
+      color: var(--text-muted);
+      padding: 5px 10px;
       border-radius: var(--radius-sm);
       cursor: pointer;
-      transition: all 0.2s;
+      font-size: 12px;
+      font-weight: 500;
+      font-family: var(--font-sans);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      box-shadow: var(--shadow-sm);
+      transition: all 0.15s ease;
+    }
+    .action-ctrl:hover {
+      background: var(--bg-hover);
+      color: var(--text-main);
+      border-color: var(--border-base);
+    }
+    .action-ctrl:active {
+      transform: translateY(1px);
+    }
+    .action-ctrl.spinning svg {
+      animation: spin 0.6s linear infinite;
+    }
+
+    /* ─── Main Content Layout ─── */
+    .workspace {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 24px 28px 64px 28px;
+    }
+
+    /* Segmented Navigation Bar */
+    .nav-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-base);
+      margin-bottom: 24px;
+      padding-bottom: 12px;
+    }
+
+    .segmented-tabs {
+      display: flex;
+      gap: 2px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-base);
+      border-radius: var(--radius-md);
+      padding: 3px;
+    }
+
+    .tab-button {
+      padding: 6px 14px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-muted);
+      font-family: var(--font-sans);
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.15s ease;
+    }
+    .tab-button:hover {
+      color: var(--text-main);
+      background: var(--bg-hover);
+    }
+    .tab-button.active {
+      color: var(--text-main);
+      background: var(--bg-surface-elev);
+      border-color: var(--border-base);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .tab-count {
+      background: var(--status-err-bg);
+      color: var(--status-err);
+      border: 1px solid var(--status-err-bd);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: var(--radius-xs);
+    }
+
+    .section-label {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-dim);
+      margin-bottom: 14px;
       display: flex;
       align-items: center;
       gap: 8px;
     }
-    .tab-btn:hover { color: var(--text-primary); background: var(--bg-glass-hover); }
-    .tab-btn.active {
-      color: var(--text-primary);
-      background: var(--accent-indigo);
-      box-shadow: var(--shadow-btn);
-    }
-    .tab-badge {
-      background: var(--accent-rose);
-      color: white;
-      font-size: 11px;
-      font-weight: 700;
-      padding: 2px 7px;
-      border-radius: 10px;
-      min-width: 18px;
-      text-align: center;
-      animation: pulse-badge 1.5s ease-in-out infinite;
-    }
-    @keyframes pulse-badge {
-      0%, 100% { transform: scale(1); }
-      50% { transform: scale(1.1); }
-    }
+
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
-    /* ─── Section Title ─── */
-    .section-title {
-      font-size: 15px;
-      font-weight: 600;
-      color: var(--text-secondary);
-      margin-bottom: 16px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
+    /* ─── Cards & Panels ─── */
+    .panel {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-base);
+      border-radius: var(--radius-md);
+      padding: 20px 22px;
+      margin-bottom: 12px;
+      box-shadow: var(--shadow-panel);
+      transition: border-color 0.15s ease;
+    }
+    .panel:hover {
+      border-color: var(--border-focus);
     }
 
-    /* ─── Cards ─── */
-    .card {
-      background: var(--bg-card);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border: 1px solid var(--border-glass);
-      border-radius: var(--radius-lg);
-      padding: 20px 24px;
-      margin-bottom: 12px;
-      transition: all 0.25s ease;
-      box-shadow: var(--shadow-card);
-    }
-    .card:hover {
-      border-color: var(--border-active);
-      box-shadow: var(--shadow-card), var(--shadow-glow);
-      transform: translateY(-1px);
-    }
-    .card-header {
+    .panel-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
       margin-bottom: 12px;
-    }
-    .card-title {
-      font-size: 16px;
-      font-weight: 600;
+      flex-wrap: wrap;
+      gap: 10px;
     }
 
-    /* ─── Badges ─── */
-    .badge {
+    .panel-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .panel-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    /* Status Badges */
+    .status-chip {
       display: inline-flex;
       align-items: center;
       gap: 5px;
-      padding: 4px 12px;
-      border-radius: 20px;
+      padding: 2px 8px;
+      border-radius: var(--radius-xs);
+      font-family: var(--font-mono);
       font-size: 11px;
       font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.02em;
     }
-    .badge-active  { background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
-    .badge-lost    { background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); border: 1px solid rgba(244, 63, 94, 0.3); }
-    .badge-pending { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); border: 1px solid rgba(245, 158, 11, 0.3); animation: pulse-badge 1.5s ease-in-out infinite; }
+    .status-chip::before {
+      content: '';
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .status-chip.ok {
+      background: var(--status-ok-bg);
+      color: var(--status-ok);
+      border: 1px solid var(--status-ok-bd);
+    }
+    .status-chip.err {
+      background: var(--status-err-bg);
+      color: var(--status-err);
+      border: 1px solid var(--status-err-bd);
+    }
+    .status-chip.warn {
+      background: var(--status-warn-bg);
+      color: var(--status-warn);
+      border: 1px solid var(--status-warn-bd);
+    }
 
-    /* ─── Meta info ─── */
-    .meta-row {
+    /* Spec Key-Value Row */
+    .spec-grid {
       display: flex;
-      gap: 24px;
       flex-wrap: wrap;
-      font-size: 13px;
-      color: var(--text-secondary);
-      margin-bottom: 8px;
+      gap: 18px 24px;
+      font-size: 12px;
+      color: var(--text-muted);
+      padding: 10px 0;
+      border-top: 1px solid var(--border-subtle);
+      border-bottom: 1px solid var(--border-subtle);
+      margin: 10px 0;
     }
-    .meta-item {
+    .spec-item {
       display: flex;
       align-items: center;
       gap: 6px;
     }
-    .meta-label { color: var(--text-muted); }
+    .spec-k {
+      color: var(--text-dim);
+      font-weight: 500;
+    }
+    .spec-v {
+      color: var(--text-main);
+      font-weight: 500;
+    }
 
-    /* ─── Buttons ─── */
-    .btn {
-      padding: 8px 16px;
-      border: none;
-      border-radius: var(--radius-sm);
-      font-family: var(--font);
+    .code-tag {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--status-info);
+      background: var(--status-info-bg);
+      border: 1px solid var(--status-info-bd);
+      padding: 1px 6px;
+      border-radius: var(--radius-xs);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ─── Utilitarian Action Buttons ─── */
+    .btn-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+
+    .cmd-btn {
+      padding: 6px 12px;
+      border: 1px solid var(--border-base);
+      background: var(--bg-surface-elev);
+      color: var(--text-main);
+      font-family: var(--font-sans);
       font-size: 12px;
-      font-weight: 600;
+      font-weight: 500;
+      border-radius: var(--radius-sm);
       cursor: pointer;
-      transition: all 0.2s;
       display: inline-flex;
       align-items: center;
       gap: 6px;
+      box-shadow: var(--shadow-btn);
+      transition: all 0.15s ease;
+    }
+    .cmd-btn:hover:not(:disabled) {
+      background: var(--bg-hover);
+      border-color: var(--border-focus);
+    }
+    .cmd-btn:active:not(:disabled) {
+      transform: translateY(1px);
+    }
+    .cmd-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .cmd-btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+    }
+    .cmd-btn.primary:hover:not(:disabled) {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+    }
+
+    .cmd-btn.danger {
+      background: var(--status-err-bg);
+      border-color: var(--status-err-bd);
+      color: var(--status-err);
+    }
+    .cmd-btn.danger:hover:not(:disabled) {
+      background: rgba(239, 68, 68, 0.2);
+    }
+
+    .cmd-btn.success {
+      background: var(--status-ok-bg);
+      border-color: var(--status-ok-bd);
+      color: var(--status-ok);
+    }
+    .cmd-btn.success:hover:not(:disabled) {
+      background: rgba(16, 185, 129, 0.2);
+    }
+
+    /* Pending Card Left Border */
+    .pending-panel {
+      border-left: 3px solid var(--status-warn);
+    }
+
+    /* ─── Detail Drawer & User Chips ─── */
+    .panel-drawer {
+      display: none;
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .panel-drawer.open {
+      display: block;
+    }
+    .drawer-title {
+      font-size: 11px;
+      font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.3px;
+      letter-spacing: 0.05em;
+      color: var(--text-dim);
+      margin-bottom: 8px;
     }
-    .btn:hover { transform: translateY(-1px); }
-    .btn:active { transform: translateY(0); }
-    .btn-primary   { background: var(--gradient-primary); color: white; box-shadow: var(--shadow-btn); }
-    .btn-danger    { background: var(--gradient-danger); color: white; }
-    .btn-success   { background: var(--gradient-success); color: white; }
-    .btn-outline {
-      background: transparent;
-      color: var(--text-secondary);
-      border: 1px solid var(--border-glass);
-    }
-    .btn-outline:hover {
-      background: var(--bg-glass-hover);
-      color: var(--text-primary);
-      border-color: var(--border-active);
-    }
-    .btn-sm { padding: 6px 12px; font-size: 11px; }
-    .btn-group {
+
+    .chip-list {
       display: flex;
-      gap: 6px;
       flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 12px;
     }
 
-    /* ─── Approval action buttons ─── */
-    .btn-approve-onetime { background: linear-gradient(135deg, #f59e0b, #d97706); color: #fff; }
-    .btn-approve-24h     { background: linear-gradient(135deg, #0ea5e9, #0284c7); color: #fff; }
-    .btn-approve-7d      { background: linear-gradient(135deg, #6366f1, #4f46e5); color: #fff; }
-    .btn-approve-forever { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
-    .btn-deny            { background: linear-gradient(135deg, #f43f5e, #e11d48); color: #fff; }
-
-    /* ─── Fingerprint mono display ─── */
-    .mono {
-      font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
-      font-size: 12px;
-      color: var(--accent-sky);
-      background: rgba(14, 165, 233, 0.08);
-      padding: 2px 8px;
-      border-radius: 4px;
-      word-break: break-all;
-    }
-
-    /* ─── Forms ─── */
-    .form-row {
-      display: flex;
-      gap: 10px;
+    .chip {
+      display: inline-flex;
       align-items: center;
-      margin-top: 12px;
+      gap: 6px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-base);
+      border-radius: var(--radius-xs);
+      padding: 3px 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-main);
     }
-    .form-input {
-      background: var(--bg-glass);
-      border: 1px solid var(--border-glass);
-      border-radius: var(--radius-sm);
-      padding: 8px 14px;
-      color: var(--text-primary);
-      font-family: var(--font);
+    .chip button {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
       font-size: 13px;
-      outline: none;
-      transition: border-color 0.2s;
-      flex: 1;
+      line-height: 1;
+      padding: 0;
     }
-    .form-input:focus { border-color: var(--accent-indigo); }
-    .form-input::placeholder { color: var(--text-muted); }
+    .chip button:hover {
+      color: var(--status-err);
+    }
+
+    .input-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .line-input {
+      background: var(--bg-canvas);
+      border: 1px solid var(--border-base);
+      border-radius: var(--radius-sm);
+      padding: 6px 12px;
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      font-size: 12px;
+      outline: none;
+      flex: 1;
+      transition: border-color 0.15s ease;
+    }
+    .line-input:focus {
+      border-color: var(--accent);
+      background: var(--bg-surface);
+    }
+    .line-input::placeholder {
+      color: var(--text-dim);
+    }
+
+    /* ─── Data Tables ─── */
+    .table-frame {
+      overflow-x: auto;
+      border: 1px solid var(--border-base);
+      border-radius: var(--radius-md);
+      background: var(--bg-surface);
+    }
+    .grid-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      text-align: left;
+    }
+    .grid-table th {
+      padding: 10px 14px;
+      color: var(--text-dim);
+      font-family: var(--font-mono);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--border-base);
+      background: var(--bg-subtle);
+    }
+    .grid-table td {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .grid-table tr:last-child td {
+      border-bottom: none;
+    }
+    .grid-table tr:hover td {
+      background: var(--bg-hover);
+      color: var(--text-main);
+    }
 
     /* ─── Empty State ─── */
     .empty-state {
       text-align: center;
       padding: 48px 24px;
-      color: var(--text-muted);
+      background: var(--bg-surface);
+      border: 1px dashed var(--border-base);
+      border-radius: var(--radius-md);
+      color: var(--text-dim);
     }
-    .empty-state-icon {
-      font-size: 48px;
-      margin-bottom: 16px;
-      opacity: 0.5;
+    .empty-state svg {
+      width: 32px;
+      height: 32px;
+      margin-bottom: 10px;
+      color: var(--text-dim);
+      opacity: 0.6;
     }
     .empty-state-text {
-      font-size: 14px;
-    }
-
-    /* ─── Pending request card highlight ─── */
-    .pending-card {
-      border-color: rgba(245, 158, 11, 0.3);
-      background: rgba(245, 158, 11, 0.03);
-    }
-    .pending-card:hover {
-      border-color: rgba(245, 158, 11, 0.5);
-    }
-
-    /* ─── Log table ─── */
-    .log-table {
-      width: 100%;
-      border-collapse: separate;
-      border-spacing: 0;
       font-size: 13px;
-    }
-    .log-table th {
-      text-align: left;
-      padding: 10px 14px;
-      color: var(--text-muted);
       font-weight: 500;
-      text-transform: uppercase;
-      font-size: 11px;
-      letter-spacing: 0.5px;
-      border-bottom: 1px solid var(--border-glass);
-    }
-    .log-table td {
-      padding: 10px 14px;
-      border-bottom: 1px solid rgba(255,255,255,0.03);
-      color: var(--text-secondary);
-    }
-    .log-table tr:hover td { background: var(--bg-glass); }
-
-    /* ─── Drive details expandable ─── */
-    .drive-details {
-      display: none;
-      margin-top: 16px;
-      padding-top: 16px;
-      border-top: 1px solid var(--border-glass);
-    }
-    .drive-details.open { display: block; }
-    .drive-details h4 {
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--text-secondary);
-      margin-bottom: 8px;
-      margin-top: 14px;
-    }
-    .drive-details h4:first-child { margin-top: 0; }
-
-    .user-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      background: var(--bg-glass);
-      border: 1px solid var(--border-glass);
-      border-radius: 20px;
-      padding: 4px 12px 4px 8px;
-      font-size: 12px;
-      margin: 3px;
-      color: var(--text-secondary);
-    }
-    .user-chip .remove-btn {
-      cursor: pointer;
       color: var(--text-muted);
-      transition: color 0.2s;
-      border: none;
-      background: none;
-      font-size: 14px;
-      padding: 0 2px;
-      font-family: var(--font);
     }
-    .user-chip .remove-btn:hover { color: var(--accent-rose); }
 
-    /* ─── Spinner ─── */
-    .spinner {
-      display: inline-block;
-      width: 14px; height: 14px;
-      border: 2px solid var(--border-glass);
-      border-top-color: var(--accent-indigo);
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* ─── Toast notifications ─── */
-    .toast-container {
+    /* ─── Toast Alerts ─── */
+    .toast-deck {
       position: fixed;
       bottom: 24px;
       right: 24px;
@@ -472,144 +688,222 @@
       flex-direction: column;
       gap: 8px;
     }
-    .toast {
-      background: var(--bg-secondary);
-      border: 1px solid var(--border-glass);
-      border-radius: var(--radius-md);
-      padding: 12px 20px;
-      font-size: 13px;
-      color: var(--text-primary);
-      box-shadow: var(--shadow-card);
-      animation: slideIn 0.3s ease;
+    .toast-pill {
+      background: var(--bg-surface-elev);
+      border: 1px solid var(--border-base);
+      border-radius: var(--radius-sm);
+      padding: 10px 16px;
+      font-size: 12px;
+      font-family: var(--font-sans);
+      font-weight: 500;
+      color: var(--text-main);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
       display: flex;
       align-items: center;
       gap: 10px;
-      backdrop-filter: blur(16px);
+      animation: slideIn 0.2s ease;
+      transition: opacity 0.2s ease;
     }
-    .toast.success { border-left: 3px solid var(--accent-emerald); }
-    .toast.error   { border-left: 3px solid var(--accent-rose); }
-    .toast.info    { border-left: 3px solid var(--accent-sky); }
+    .toast-pill.ok   { border-left: 3px solid var(--status-ok); }
+    .toast-pill.err  { border-left: 3px solid var(--status-err); }
+    .toast-pill.info { border-left: 3px solid var(--accent); }
+
     @keyframes slideIn {
-      from { opacity: 0; transform: translateX(20px); }
-      to   { opacity: 1; transform: translateX(0); }
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
     }
 
-    /* ─── Responsive ─── */
     @media (max-width: 768px) {
-      .container { padding: 16px; }
-      .header { padding: 12px 16px; flex-wrap: wrap; gap: 12px; }
-      .meta-row { gap: 12px; }
-      .btn-group { flex-direction: column; }
-      .admin-key-input { width: 160px; }
-    }
-
-    /* ─── Refresh Button ─── */
-    .refresh-btn {
-      background: var(--bg-glass);
-      border: 1px solid var(--border-glass);
-      color: var(--text-primary);
-      padding: 6px 14px;
-      border-radius: var(--radius-sm);
-      cursor: pointer;
-      font-size: 14px;
-      font-family: var(--font);
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      transition: all 0.2s ease;
-    }
-    .refresh-btn:hover {
-      background: var(--bg-glass-hover);
-      border-color: var(--accent-indigo);
-    }
-    .refresh-btn.spinning .refresh-icon {
-      animation: spin 0.6s linear;
+      .topbar { padding: 0 16px; }
+      .workspace { padding: 16px; }
+      .btn-row { width: 100%; }
+      .btn-row .cmd-btn { flex: 1; justify-content: center; }
+      .nav-bar { flex-direction: column; gap: 12px; align-items: stretch; }
     }
   </style>
 </head>
 <body>
 
-  <!-- ═══ Header ═══ -->
-  <header class="header">
-    <div class="header-left">
-      <div class="header-logo">🔐</div>
-      <h1>USB <span>Killswitch</span> Dashboard</h1>
+  <!-- ═══ Topbar Navigation ═══ -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <a href="/dashboard" class="brand-mark" aria-label="USB Killswitch Dashboard">
+        <div class="brand-icon">
+          <!-- Clean SVG Shield Key -->
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <circle cx="12" cy="10" r="2"/>
+            <path d="M12 12v3"/>
+          </svg>
+        </div>
+        <div class="brand-name">
+          USB Killswitch
+          <span class="brand-version">v2.0</span>
+        </div>
+      </a>
     </div>
-    <div class="header-status">
-      <div class="user-pill" id="userPill" style="display:flex; align-items:center; gap:8px; background:var(--bg-glass); border:1px solid var(--border-glass); padding:5px 12px; border-radius:20px;">
-        <span style="font-size:14px;">👤</span>
-        <span id="userEmailText" style="font-size:12px; font-weight:600; color:var(--text-primary);">Loading...</span>
-        <a href="/auth/logout" style="font-size:11px; color:var(--accent-rose); text-decoration:none; margin-left:6px; font-weight:600;">Sign Out</a>
-      </div>
-      <button class="refresh-btn" id="refreshBtn" onclick="doManualRefresh()">
-        <span class="refresh-icon">🔄</span> Refresh
+
+    <div class="topbar-right">
+      <!-- Dark / Light Theme Toggle -->
+      <button class="action-ctrl" id="themeToggleBtn" onclick="toggleTheme()" title="Switch Light Ivory / Dark Mode">
+        <span id="themeIconSvg">
+          <!-- Sun Icon (for switching to light ivory) -->
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="5"/>
+            <line x1="12" y1="1" x2="12" y2="3"/>
+            <line x1="12" y1="21" x2="12" y2="23"/>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+            <line x1="1" y1="12" x2="3" y2="12"/>
+            <line x1="21" y1="12" x2="23" y2="12"/>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+          </svg>
+        </span>
+        <span id="themeLabelText">Light Ivory</span>
       </button>
-      <div class="status-dot" id="statusDot"></div>
-      <span class="status-text" id="statusText">Connecting...</span>
+
+      <div class="user-tag" id="userPill">
+        <span>user:</span>
+        <strong id="userEmailText">loading...</strong>
+        <a href="/auth/logout">sign out</a>
+      </div>
+
+      <button class="action-ctrl" id="refreshBtn" onclick="doManualRefresh()" title="Refresh console data">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="23 4 23 10 17 10"/>
+          <polyline points="1 20 1 14 7 14"/>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+        </svg>
+        <span>Sync</span>
+      </button>
+
+      <div class="system-health">
+        <div class="led-dot" id="statusDot"></div>
+        <span id="statusText">connecting...</span>
+      </div>
     </div>
   </header>
 
-  <!-- ═══ Main Container ═══ -->
-  <div class="container">
+  <!-- ═══ Main Workspace ═══ -->
+  <main class="workspace">
 
-    <!-- Tab Navigation -->
-    <div class="tabs">
-      <button class="tab-btn active" data-tab="approvals" id="tab-approvals">
-        🔔 Approval Center <span class="tab-badge" id="pendingBadge" style="display:none">0</span>
-      </button>
-      <button class="tab-btn" data-tab="drives" id="tab-drives">
-        💾 Drives
-      </button>
-      <button class="tab-btn" data-tab="logs" id="tab-logs">
-        📋 Activity Log
-      </button>
+    <!-- Segmented Tab Navigation -->
+    <div class="nav-bar">
+      <nav class="segmented-tabs" aria-label="Console views">
+        <button class="tab-button active" data-tab="approvals" id="tab-approvals">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+          </svg>
+          Pending Approvals
+          <span class="tab-count" id="pendingBadge" style="display:none">0</span>
+        </button>
+
+        <button class="tab-button" data-tab="drives" id="tab-drives">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+            <line x1="6" y1="6" x2="6.01" y2="6"/>
+            <line x1="6" y1="18" x2="6.01" y2="18"/>
+          </svg>
+          Registered Vaults
+        </button>
+
+        <button class="tab-button" data-tab="logs" id="tab-logs">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="4 17 10 11 4 5"/>
+            <line x1="12" y1="19" x2="20" y2="19"/>
+          </svg>
+          Audit Stream
+        </button>
+      </nav>
     </div>
 
-    <!-- ═══ Tab: Approval Center ═══ -->
-    <div class="tab-panel active" id="panel-approvals">
-      <div class="section-title">📨 Pending Access Requests</div>
+    <!-- ═══ View: Pending Approvals ═══ -->
+    <section class="tab-panel active" id="panel-approvals" aria-labelledby="tab-approvals">
+      <div class="section-label">Device Authorization Queue</div>
       <div id="pendingList">
         <div class="empty-state">
-          <div class="empty-state-icon">🛡️</div>
-          <div class="empty-state-text">No pending requests. All clear.</div>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+          <div class="empty-state-text">No pending authorization requests.</div>
         </div>
       </div>
-    </div>
+    </section>
 
-    <!-- ═══ Tab: Drives ═══ -->
-    <div class="tab-panel" id="panel-drives">
-      <div class="section-title">💾 Registered Drives</div>
+    <!-- ═══ View: Registered Vaults ═══ -->
+    <section class="tab-panel" id="panel-drives" aria-labelledby="tab-drives">
+      <div class="section-label">Cryptographic Storage Units</div>
       <div id="drivesList">
         <div class="empty-state">
-          <div class="empty-state-icon">💾</div>
-          <div class="empty-state-text">No drives registered yet.</div>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+            <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/>
+            <line x1="7" y1="2" x2="7" y2="22"/>
+            <line x1="17" y1="2" x2="17" y2="22"/>
+            <line x1="2" y1="12" x2="22" y2="12"/>
+          </svg>
+          <div class="empty-state-text">No storage units registered.</div>
         </div>
       </div>
-    </div>
+    </section>
 
-    <!-- ═══ Tab: Activity Log ═══ -->
-    <div class="tab-panel" id="panel-logs">
-      <div class="section-title">📋 Recent Authentication Events</div>
-      <div id="logsList" class="card">
+    <!-- ═══ View: Audit Stream ═══ -->
+    <section class="tab-panel" id="panel-logs" aria-labelledby="tab-logs">
+      <div class="section-label">Cryptographic Event Log</div>
+      <div id="logsList">
         <div class="empty-state">
-          <div class="empty-state-icon">📋</div>
-          <div class="empty-state-text">No activity yet.</div>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+            <polyline points="4 17 10 11 4 5"/>
+            <line x1="12" y1="19" x2="20" y2="19"/>
+          </svg>
+          <div class="empty-state-text">No audit entries recorded.</div>
         </div>
       </div>
-    </div>
-  </div>
+    </section>
+  </main>
 
-  <!-- Toast Container -->
-  <div class="toast-container" id="toastContainer"></div>
+  <!-- Toast Notification Deck -->
+  <div class="toast-deck" id="toastContainer" aria-live="polite"></div>
 
   <!-- ═══════════════════════════════════════════════
-       JavaScript — Dashboard Logic
+       Console Logic
        ═══════════════════════════════════════════════ -->
   <script>
     const API_BASE = window.location.origin;
-    let pollInterval = null;
 
-    // ─── Helpers ───
+    // ─── Theme Controller (Default: Dark Mode) ───
+    const sunIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>`;
+    const moonIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
+
+    function updateThemeUI(theme) {
+      const iconWrap = document.getElementById('themeIconSvg');
+      const label = document.getElementById('themeLabelText');
+      if (iconWrap && label) {
+        if (theme === 'dark') {
+          iconWrap.innerHTML = sunIcon;
+          label.textContent = 'Light Ivory';
+        } else {
+          iconWrap.innerHTML = moonIcon;
+          label.textContent = 'Dark Mode';
+        }
+      }
+    }
+
+    function toggleTheme() {
+      const current = document.documentElement.getAttribute('data-theme') || 'dark';
+      const next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      updateThemeUI(next);
+      showToast(`Switched to ${next === 'dark' ? 'Dark' : 'Light Ivory'} console`, 'info');
+    }
+
+    // ─── HTTP Helper ───
     async function apiFetch(path, opts = {}) {
       const headers = { 'Content-Type': 'application/json', ...opts.headers };
       const res = await fetch(`${API_BASE}${path}`, { ...opts, headers });
@@ -617,19 +911,21 @@
     }
 
     function showToast(message, type = 'info') {
-      const container = document.getElementById('toastContainer');
-      const icons = { success: '✅', error: '❌', info: 'ℹ️' };
-      const toast = document.createElement('div');
-      toast.className = `toast ${type}`;
-      toast.innerHTML = `<span>${icons[type] || 'ℹ️'}</span> ${message}`;
-      container.appendChild(toast);
-      setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 4000);
+      const deck = document.getElementById('toastContainer');
+      const pill = document.createElement('div');
+      pill.className = `toast-pill ${type === 'success' ? 'ok' : type === 'error' ? 'err' : 'info'}`;
+      pill.innerHTML = `<span>${message}</span>`;
+      deck.appendChild(pill);
+      setTimeout(() => {
+        pill.style.opacity = '0';
+        setTimeout(() => pill.remove(), 200);
+      }, 3500);
     }
 
     function timeAgo(isoStr) {
       const diff = Date.now() - new Date(isoStr).getTime();
       const mins = Math.floor(diff / 60000);
-      if (mins < 1) return 'just now';
+      if (mins < 1) return 'now';
       if (mins < 60) return `${mins}m ago`;
       const hrs = Math.floor(mins / 60);
       if (hrs < 24) return `${hrs}h ago`;
@@ -637,14 +933,14 @@
     }
 
     function truncFp(fp) {
-      if (!fp) return 'N/A';
-      return fp.substring(0, 12) + '…' + fp.substring(fp.length - 8);
+      if (!fp) return '—';
+      return fp.substring(0, 10) + '…' + fp.substring(fp.length - 8);
     }
 
-    // ─── Tab Switching ───
-    document.querySelectorAll('.tab-btn').forEach(btn => {
+    // ─── Segmented Tab Switcher ───
+    document.querySelectorAll('.tab-button').forEach(btn => {
       btn.addEventListener('click', () => {
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-button').forEach(b => b.classList.remove('active'));
         document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
         btn.classList.add('active');
         document.getElementById(`panel-${btn.dataset.tab}`).classList.add('active');
@@ -660,91 +956,101 @@
         badge.style.display = 'none';
         container.innerHTML = `
           <div class="empty-state">
-            <div class="empty-state-icon">🛡️</div>
-            <div class="empty-state-text">No pending requests. All clear.</div>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+            <div class="empty-state-text">No pending authorization requests.</div>
           </div>`;
         return;
       }
 
-      badge.style.display = 'inline';
+      badge.style.display = 'inline-block';
       badge.textContent = pending.length;
 
       container.innerHTML = pending.map(p => `
-        <div class="card pending-card" id="req-${p.request_id}">
-          <div class="card-header">
-            <div>
-              <span class="card-title">Access Request</span>
-              <span class="badge badge-pending">⏳ PENDING</span>
+        <div class="panel pending-panel" id="req-${p.request_id}">
+          <div class="panel-header">
+            <div class="panel-title-wrap">
+              <span class="panel-title">Host Authorization Request</span>
+              <span class="status-chip warn">Pending</span>
             </div>
-            <span class="mono">${p.request_id}</span>
+            <span class="code-tag">${p.request_id}</span>
           </div>
-          <div class="meta-row">
-            <div class="meta-item"><span class="meta-label">Drive:</span> ${p.drive_label || p.drive_id.slice(0, 8) + '…'}</div>
-            <div class="meta-item"><span class="meta-label">Email:</span> ${p.requester_email || 'Not provided'}</div>
-            <div class="meta-item"><span class="meta-label">Requested:</span> ${timeAgo(p.created_at)}</div>
+
+          <div class="spec-grid">
+            <div class="spec-item"><span class="spec-k">Vault:</span> <span class="spec-v">${p.drive_label || p.drive_id.slice(0, 8) + '…'}</span></div>
+            <div class="spec-item"><span class="spec-k">Requester:</span> <span class="spec-v">${p.requester_email || 'Unspecified'}</span></div>
+            <div class="spec-item"><span class="spec-k">Fingerprint:</span> <span class="code-tag">${truncFp(p.hardware_fingerprint)}</span></div>
+            <div class="spec-item"><span class="spec-k">Queued:</span> <span class="spec-v">${timeAgo(p.created_at)}</span></div>
           </div>
-          <div class="meta-row" style="margin-top:4px">
-            <div class="meta-item"><span class="meta-label">Fingerprint:</span> <span class="mono">${truncFp(p.hardware_fingerprint)}</span></div>
-          </div>
-          <div class="btn-group" style="margin-top:14px">
-            <button class="btn btn-sm btn-approve-onetime" onclick="approveRequest('${p.request_id}', 'ONE_TIME')">🔑 One-Time Session</button>
-            <button class="btn btn-sm btn-approve-24h" onclick="approveRequest('${p.request_id}', 'CUSTOM_LEASE', 24)">⏱️ 24-Hour Lease</button>
-            <button class="btn btn-sm btn-approve-7d" onclick="approveRequest('${p.request_id}', 'CUSTOM_LEASE', 168)">📅 7-Day Lease</button>
-            <button class="btn btn-sm btn-approve-forever" onclick="approveRequest('${p.request_id}', 'FOREVER')">♾️ Trust Permanently</button>
-            <button class="btn btn-sm btn-deny" onclick="denyRequest('${p.request_id}')">🚫 Deny & Block</button>
+
+          <div class="btn-row">
+            <button class="cmd-btn" onclick="approveRequest('${p.request_id}', 'ONE_TIME')">Authorize 12h</button>
+            <button class="cmd-btn" onclick="approveRequest('${p.request_id}', 'CUSTOM_LEASE', 24)">Lease 24h</button>
+            <button class="cmd-btn" onclick="approveRequest('${p.request_id}', 'CUSTOM_LEASE', 168)">Lease 7d</button>
+            <button class="cmd-btn primary" onclick="approveRequest('${p.request_id}', 'FOREVER')">Trust Host Permanently</button>
+            <button class="cmd-btn danger" onclick="denyRequest('${p.request_id}')">Deny</button>
           </div>
         </div>
       `).join('');
     }
 
-    // ─── Render Drives ───
+    // ─── Render Registered Drives ───
     function renderDrives(drives) {
       const container = document.getElementById('drivesList');
       if (drives.length === 0) {
         container.innerHTML = `
           <div class="empty-state">
-            <div class="empty-state-icon">💾</div>
-            <div class="empty-state-text">No drives registered yet.</div>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+              <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/>
+              <line x1="7" y1="2" x2="7" y2="22"/>
+              <line x1="17" y1="2" x2="17" y2="22"/>
+              <line x1="2" y1="12" x2="22" y2="12"/>
+            </svg>
+            <div class="empty-state-text">No storage units registered.</div>
           </div>`;
         return;
       }
 
       container.innerHTML = drives.map(d => `
-        <div class="card" id="drive-${d.drive_id}">
-          <div class="card-header">
-            <div>
-              <span class="card-title">${d.label || 'Unlabelled Drive'}</span>
-              <span class="badge ${d.status === 'ACTIVE' ? 'badge-active' : 'badge-lost'}">${d.status === 'ACTIVE' ? '● ACTIVE' : '⊘ LOST'}</span>
+        <div class="panel" id="drive-${d.drive_id}">
+          <div class="panel-header">
+            <div class="panel-title-wrap">
+              <span class="panel-title">${d.label || 'Unlabeled Drive'}</span>
+              <span class="status-chip ${d.status === 'ACTIVE' ? 'ok' : 'err'}">${d.status}</span>
             </div>
-            <div class="btn-group">
+            <div class="btn-row" style="margin-top:0">
               ${d.status === 'ACTIVE'
-                ? `<button class="btn btn-sm btn-danger" onclick="markLost('${d.drive_id}')">🔴 Mark LOST</button>`
-                : `<button class="btn btn-sm btn-success" onclick="reactivate('${d.drive_id}')">🟢 Reactivate</button>`
+                ? `<button class="cmd-btn danger" onclick="markLost('${d.drive_id}')">Killswitch (Revoke)</button>`
+                : `<button class="cmd-btn success" onclick="reactivate('${d.drive_id}')">Reactivate</button>`
               }
-              <button class="btn btn-sm btn-outline" onclick="toggleDriveDetails('${d.drive_id}')">Details</button>
+              <button class="cmd-btn" onclick="toggleDriveDetails('${d.drive_id}')">Access Control</button>
             </div>
           </div>
-          <div class="meta-row">
-            <div class="meta-item"><span class="meta-label">ID:</span> <span class="mono">${d.drive_id.slice(0, 8)}…</span></div>
-            <div class="meta-item"><span class="meta-label">Owner:</span> ${d.owner_email}</div>
-            <div class="meta-item"><span class="meta-label">Users:</span> ${d.access_list_count}</div>
-            <div class="meta-item"><span class="meta-label">Devices:</span> ${d.trusted_device_count}</div>
-            <div class="meta-item"><span class="meta-label">Created:</span> ${timeAgo(d.created_at)}</div>
+
+          <div class="spec-grid">
+            <div class="spec-item"><span class="spec-k">ID:</span> <span class="code-tag">${d.drive_id.slice(0, 8)}…</span></div>
+            <div class="spec-item"><span class="spec-k">Owner:</span> <span class="spec-v">${d.owner_email}</span></div>
+            <div class="spec-item"><span class="spec-k">Authorized Users:</span> <span class="spec-v">${d.access_list_count}</span></div>
+            <div class="spec-item"><span class="spec-k">Trusted Hosts:</span> <span class="spec-v">${d.trusted_device_count}</span></div>
+            <div class="spec-item"><span class="spec-k">Registered:</span> <span class="spec-v">${timeAgo(d.created_at)}</span></div>
           </div>
-          ${d.lost_reason ? `<div class="meta-row"><div class="meta-item"><span class="meta-label">Lost Reason:</span> ${d.lost_reason}</div></div>` : ''}
-          <div class="drive-details" id="details-${d.drive_id}">
-            <h4>👥 Access List</h4>
-            <div id="access-list-${d.drive_id}"><span class="spinner"></span> Loading...</div>
-            <div class="form-row">
-              <input type="email" class="form-input" id="add-email-${d.drive_id}" placeholder="Add user email...">
-              <button class="btn btn-sm btn-primary" onclick="addUser('${d.drive_id}')">+ Add</button>
+
+          ${d.lost_reason ? `<div style="font-size:12px;color:var(--status-err);margin-bottom:8px">Reason: ${d.lost_reason}</div>` : ''}
+
+          <div class="panel-drawer" id="details-${d.drive_id}">
+            <div class="drawer-title">Authorized Accounts</div>
+            <div class="chip-list" id="access-list-${d.drive_id}">Fetching access list...</div>
+            <div class="input-row">
+              <input type="email" class="line-input" id="add-email-${d.drive_id}" placeholder="user@company.com">
+              <button class="cmd-btn primary" onclick="addUser('${d.drive_id}')">Grant Access</button>
             </div>
           </div>
         </div>
       `).join('');
     }
 
-    // ─── Toggle Drive Details ───
+    // ─── Toggle Details ───
     async function toggleDriveDetails(driveId) {
       const el = document.getElementById(`details-${driveId}`);
       const isOpen = el.classList.contains('open');
@@ -754,26 +1060,26 @@
       }
       el.classList.add('open');
 
-      // Fetch full drive details
       try {
         const { data } = await apiFetch(`/api/status/${driveId}`);
         const accessListEl = document.getElementById(`access-list-${driveId}`);
         if (data.access_list && data.access_list.length > 0) {
-          const isOwner = (email) => email === data.owner_email;
+          const isOwner = (email) => email.toLowerCase() === (data.owner_email || '').toLowerCase();
           accessListEl.innerHTML = data.access_list.map(a =>
-            `<span class="user-chip">
-              ${a.email} ${isOwner(a.email) ? '👑' : `<button class="remove-btn" onclick="removeUser('${driveId}', '${a.email}')" title="Remove">×</button>`}
+            `<span class="chip">
+              <span>${a.email}</span>
+              ${isOwner(a.email) ? '<span style="font-size:10px;color:var(--text-dim)">[owner]</span>' : `<button onclick="removeUser('${driveId}', '${a.email}')" title="Revoke">×</button>`}
             </span>`
           ).join('');
         } else {
-          accessListEl.innerHTML = '<span style="color:var(--text-muted);font-size:13px">No users in access list.</span>';
+          accessListEl.innerHTML = '<span style="color:var(--text-dim);font-size:12px">No guest accounts authorized.</span>';
         }
       } catch (e) {
         console.error(e);
       }
     }
 
-    // ─── API Actions ───
+    // ─── Actions ───
     async function approveRequest(requestId, scope, leaseHours) {
       try {
         const body = { request_id: requestId, scope };
@@ -796,7 +1102,7 @@
           method: 'POST', body: JSON.stringify({ request_id: requestId })
         });
         if (status === 200) {
-          showToast(`Request ${requestId} denied`, 'info');
+          showToast(`Request ${requestId} rejected`, 'info');
           refreshAll();
         } else {
           showToast(data.error || 'Denial failed', 'error');
@@ -805,16 +1111,16 @@
     }
 
     async function markLost(driveId) {
-      if (!confirm('⚠️ Mark this drive as LOST? All trust and pending requests will be revoked.')) return;
+      if (!confirm('Engage killswitch? All hardware cryptographic tokens for this drive will be immediately revoked.')) return;
       try {
         const { status, data } = await apiFetch('/api/mark-lost', {
-          method: 'POST', body: JSON.stringify({ drive_id: driveId, reason: 'Marked lost from dashboard' })
+          method: 'POST', body: JSON.stringify({ drive_id: driveId, reason: 'Remote killswitch invoked from admin console' })
         });
         if (status === 200) {
-          showToast('Drive marked as LOST. Kill switch activated.', 'error');
+          showToast('Drive disabled. Killswitch active.', 'error');
           refreshAll();
         } else {
-          showToast(data.error || 'Failed', 'error');
+          showToast(data.error || 'Command failed', 'error');
         }
       } catch (e) { showToast('Network error', 'error'); }
     }
@@ -828,7 +1134,7 @@
           showToast('Drive reactivated.', 'success');
           refreshAll();
         } else {
-          showToast(data.error || 'Failed', 'error');
+          showToast(data.error || 'Command failed', 'error');
         }
       } catch (e) { showToast('Network error', 'error'); }
     }
@@ -842,12 +1148,12 @@
           method: 'POST', body: JSON.stringify({ drive_id: driveId, email })
         });
         if (status === 201) {
-          showToast(`User ${email} added.`, 'success');
+          showToast(`Access granted to ${email}`, 'success');
           input.value = '';
-          toggleDriveDetails(driveId); // Close
-          setTimeout(() => toggleDriveDetails(driveId), 100); // Reopen with updated data
+          toggleDriveDetails(driveId);
+          setTimeout(() => toggleDriveDetails(driveId), 100);
         } else {
-          showToast(data.error || 'Failed', 'error');
+          showToast(data.error || 'Command failed', 'error');
         }
       } catch (e) { showToast('Network error', 'error'); }
     }
@@ -858,45 +1164,49 @@
           method: 'POST', body: JSON.stringify({ drive_id: driveId, email })
         });
         if (status === 200) {
-          showToast(`User ${email} removed.`, 'success');
+          showToast(`Access revoked for ${email}`, 'success');
           toggleDriveDetails(driveId);
           setTimeout(() => toggleDriveDetails(driveId), 100);
         } else {
-          showToast(data.error || 'Failed', 'error');
+          showToast(data.error || 'Command failed', 'error');
         }
       } catch (e) { showToast('Network error', 'error'); }
     }
 
-    // ─── Data Refresh ───
+    // ─── Data Sync ───
     async function refreshAll() {
       try {
-        const [drivesRes, pendingRes, healthRes] = await Promise.all([
+        const [drivesRes, pendingRes, healthRes, meRes] = await Promise.all([
           apiFetch('/api/dashboard/drives'),
           apiFetch('/api/dashboard/pending'),
-          apiFetch('/api/health')
+          apiFetch('/api/health'),
+          apiFetch('/api/owner/me')
         ]);
 
+        if (meRes.status === 200 && meRes.data.authenticated) {
+          document.getElementById('userEmailText').textContent = meRes.data.owner_email;
+        } else {
+          document.getElementById('userEmailText').textContent = 'admin';
+        }
+
         if (drivesRes.status === 200) {
-          // Pause rendering drives if any details pane is open so we don't reset inputs
-          if (!document.querySelector('.drive-details.open')) {
+          if (!document.querySelector('.panel-drawer.open')) {
             renderDrives(drivesRes.data.drives || []);
           }
         }
-        if (pendingRes.status === 200) renderPending(pendingRes.data.pending || []);
+        if (pendingRes.status === 200) {
+          renderPending(pendingRes.data.pending || []);
+        }
 
-        // Update status indicator
-        document.getElementById('statusDot').style.background = 'var(--accent-emerald)';
-        document.getElementById('statusDot').style.boxShadow = '0 0 8px var(--accent-emerald)';
+        document.getElementById('statusDot').style.background = 'var(--status-ok)';
         const h = healthRes.data;
         document.getElementById('statusText').textContent =
-          `v${h.version || '2.0'} • ${h.drive_count || 0} drives • ${h.pending_count || 0} pending`;
+          `v${h.version || '2.0'} • ${h.drive_count || 0} vaults • ${h.pending_count || 0} pending`;
 
-        // Render logs from all drives
         await refreshLogs(drivesRes.data.drives || []);
       } catch (e) {
-        document.getElementById('statusDot').style.background = 'var(--accent-rose)';
-        document.getElementById('statusDot').style.boxShadow = '0 0 8px var(--accent-rose)';
-        document.getElementById('statusText').textContent = 'Connection lost';
+        document.getElementById('statusDot').style.background = 'var(--status-err)';
+        document.getElementById('statusText').textContent = 'offline';
         console.error('Refresh error:', e);
       }
     }
@@ -905,8 +1215,7 @@
       const logContainer = document.getElementById('logsList');
       let allLogs = [];
 
-      // Fetch logs from each drive
-      for (const d of drives.slice(0, 10)) { // Limit to 10 drives for performance
+      for (const d of drives.slice(0, 10)) {
         try {
           const { data } = await apiFetch(`/api/status/${d.drive_id}`);
           if (data.recent_auth_log) {
@@ -924,44 +1233,45 @@
       if (allLogs.length === 0) {
         logContainer.innerHTML = `
           <div class="empty-state">
-            <div class="empty-state-icon">📋</div>
-            <div class="empty-state-text">No activity yet.</div>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+              <polyline points="4 17 10 11 4 5"/>
+              <line x1="12" y1="19" x2="20" y2="19"/>
+            </svg>
+            <div class="empty-state-text">No audit entries recorded.</div>
           </div>`;
         return;
       }
 
-      const resultColors = {
-        'GRANTED': 'var(--accent-emerald)',
-        'GRANTED_ONETIME': 'var(--accent-amber)',
-        'DENIED_LOST': 'var(--accent-rose)',
-        'DENIED_EMAIL': 'var(--accent-rose)',
-        'DENIED_FINGERPRINT': 'var(--accent-rose)',
-        'PENDING_NEW': 'var(--accent-amber)',
-        'PENDING_EXISTING': 'var(--accent-amber)',
-        'NOT_FOUND': 'var(--text-muted)'
+      const getChipClass = (res) => {
+        if (res.startsWith('GRANTED')) return 'ok';
+        if (res.startsWith('DENIED')) return 'err';
+        if (res.startsWith('PENDING')) return 'warn';
+        return '';
       };
 
       logContainer.innerHTML = `
-        <table class="log-table">
-          <thead>
-            <tr><th>Time</th><th>Drive</th><th>Result</th><th>Email</th><th>IP</th></tr>
-          </thead>
-          <tbody>
-            ${allLogs.map(l => `
-              <tr>
-                <td>${timeAgo(l.timestamp)}</td>
-                <td>${l.drive_label}</td>
-                <td><span style="color:${resultColors[l.result] || 'var(--text-secondary)'};font-weight:600">${l.result}</span></td>
-                <td>${l.email || '—'}</td>
-                <td><span class="mono" style="font-size:11px">${l.ip || '—'}</span></td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
+        <div class="table-frame">
+          <table class="grid-table">
+            <thead>
+              <tr><th>Timestamp</th><th>Storage Unit</th><th>Result</th><th>Identity</th><th>Origin IP</th></tr>
+            </thead>
+            <tbody>
+              ${allLogs.map(l => `
+                <tr>
+                  <td>${timeAgo(l.timestamp)}</td>
+                  <td><strong style="color:var(--text-main)">${l.drive_label}</strong></td>
+                  <td><span class="status-chip ${getChipClass(l.result)}">${l.result}</span></td>
+                  <td>${l.email || '<span style="color:var(--text-dim)">—</span>'}</td>
+                  <td><span class="code-tag">${l.ip || '—'}</span></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
       `;
     }
 
-    // ─── Manual refresh (no auto-polling) ───
+    // ─── Manual Sync ───
     async function doManualRefresh() {
       const btn = document.getElementById('refreshBtn');
       btn.classList.add('spinning');
@@ -970,11 +1280,16 @@
       setTimeout(() => {
         btn.classList.remove('spinning');
         btn.disabled = false;
-      }, 600);
+      }, 500);
     }
 
-    // ─── Init: load once on page load ───
-    window.addEventListener('load', () => refreshAll());
+    // ─── Init ───
+    window.addEventListener('load', () => {
+      const activeTheme = localStorage.getItem('theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', activeTheme);
+      updateThemeUI(activeTheme);
+      refreshAll();
+    });
   </script>
 </body>
 </html>

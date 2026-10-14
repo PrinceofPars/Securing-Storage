@@ -11,7 +11,7 @@ Key Architecture:
 
 Vault Format v2 (vault.enc) — Tail-Manifest Design:
   ┌──────────────────────────────────────────────┐
-  │  Magic header       (8 bytes: "USBVLT02")   │
+  │  Magic header       (8 bytes: "USBVLT02")    │
   │  Salt               (32 bytes)               │
   │  Manifest Offset    (8 bytes, uint64 LE)     │
   ├──────── DATA PAYLOAD ────────────────────────┤
@@ -42,7 +42,7 @@ import struct
 import tempfile
 import time
 from pathlib import Path
-from typing import BinaryIO, Dict, List, Optional, Tuple
+from typing import BinaryIO, Dict, List, Optional, Tuple, Union
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import hashes
@@ -323,9 +323,86 @@ def derive_master_key(
 # File Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+def is_system_file(path_str: Union[str, Path]) -> bool:
+    """
+    Check if a file or directory path belongs to OS system/volume information
+    or metadata (e.g. System Volume Information, $RECYCLE.BIN, desktop.ini)
+    that should be excluded from user vaults and file views.
+    """
+    if isinstance(path_str, Path):
+        path_str = str(path_str)
+    normalized = path_str.replace('\\', '/').strip('/')
+    parts = normalized.split('/')
+
+    SYSTEM_PATTERNS = {
+        'system volume information',
+        '$recycle.bin',
+        '$recbin',
+        'thumbs.db',
+        'desktop.ini',
+        '.ds_store',
+        '.spotlight-v100',
+        '.trashes',
+        '.fseventsd',
+    }
+
+    for part in parts:
+        clean = part.lower().strip()
+        if clean in SYSTEM_PATTERNS:
+            return True
+        if clean.startswith('system volume information'):
+            return True
+        if clean.startswith('$recycle.bin'):
+            return True
+        if clean.startswith('.trash'):
+            return True
+
+    return False
+
+
+def is_protected_vault_file(path_str: Union[str, Path]) -> bool:
+    """
+    Check if a path is a protected vault file, lease token, key share, executable,
+    or system volume metadata that must NEVER be wiped, deleted, or ingested as plaintext.
+    """
+    p = Path(path_str)
+    name = p.name.lower()
+    suffix = p.suffix.lower()
+
+    if is_system_file(path_str):
+        return True
+
+    # Critical vault files & extensions (.enc, .tok)
+    if suffix in ('.enc', '.tok'):
+        return True
+
+    # Executables and client binaries
+    if suffix in ('.exe', '.dll', '.bat', '.cmd', '.com'):
+        return True
+
+    # Critical metadata filenames
+    if name in ('vault.enc', 'lease.tok', 'local_key.bin', 'config.json'):
+        return True
+
+    # Python source files / git
+    if suffix in ('.py', '.pyc') or name in ('.git', '.gitignore', 'requirements.txt'):
+        return True
+
+    return False
+
+
 def _collect_files(source_dir: Path) -> List[Path]:
-    """Recursively collect all files under source_dir."""
-    return sorted([f for f in source_dir.rglob('*') if f.is_file()])
+    """Recursively collect all files under source_dir, excluding OS system volume metadata and protected vault files."""
+    collected = []
+    for f in source_dir.rglob('*'):
+        if f.is_file():
+            try:
+                rel = str(f.relative_to(source_dir)).replace('\\', '/')
+                if not is_system_file(rel) and not is_protected_vault_file(f):
+                    collected.append(f)
+            except Exception:
+                pass
+    return sorted(collected)
 
 
 def _file_sha256(filepath: Path) -> str:
@@ -477,7 +554,8 @@ def encrypt_folder_to_vault(
         'vault_size': vault_path.stat().st_size,
         'salt_hex': salt.hex(),
         'created_at': manifest['last_modified'],
-        'version': 3
+        'version': 3,
+        'encrypted_files': files
     }
     logger.info(f"✅ Vault v3 created: {vault_path} ({len(files)} files, {total_encrypted} bytes)")
     return stats
@@ -634,7 +712,9 @@ def decrypt_files_to_working_dir(
     Returns:
         Path to the working directory.
     """
-    entries = file_entries if file_entries is not None else manifest.get('files', [])
+    entries = file_entries if file_entries is not None else [
+        f for f in manifest.get('files', []) if not is_system_file(f.get('path', ''))
+    ]
     if not entries:
         raise ValueError("No files to decrypt")
 
@@ -689,7 +769,7 @@ def decrypt_directory_to_working_dir(
     """
     Decrypt all files belonging to a specific directory prefix into a target working directory.
     """
-    all_files = manifest.get('files', [])
+    all_files = [f for f in manifest.get('files', []) if not is_system_file(f.get('path', ''))]
     clean_prefix = dir_prefix.strip('/')
     if clean_prefix:
         matching = [f for f in all_files if f['path'] == clean_prefix or f['path'].startswith(clean_prefix + '/')]
@@ -762,14 +842,18 @@ def update_vault_on_lock(
     Returns:
         Updated manifest dict.
     """
-    # Build lookup of current manifest files by path
-    existing_files = {f['path']: f for f in manifest.get('files', [])}
+    # Build lookup of current manifest files by path (excluding system metadata)
+    existing_files = {
+        f['path']: f for f in manifest.get('files', [])
+        if not is_system_file(f.get('path', ''))
+    }
 
     # Collect files from working directory
     working_files = {}
     for fp in _collect_files(working_dir):
         rel = str(fp.relative_to(working_dir)).replace('\\', '/')
-        working_files[rel] = fp
+        if not is_system_file(rel):
+            working_files[rel] = fp
 
     # Classify changes
     unchanged = []
@@ -962,22 +1046,20 @@ def migrate_v2_to_v3(
 def secure_wipe_temp(temp_dir: Path, progress_callback=None) -> int:
     """
     Securely erase all files in a temporary session directory.
+    Guards strictly against ever wiping protected files (.enc, .tok, .exe, etc.).
 
     For each file: overwrite with random bytes → truncate → delete.
-
-    Args:
-        temp_dir: Path to wipe
-        progress_callback: Optional callable(current, total, filename)
-
-    Returns:
-        Number of files wiped.
     """
     if not temp_dir.exists():
         logger.warning(f"Temp dir does not exist: {temp_dir}")
         return 0
 
     wiped = 0
-    files_to_wipe = [f for f in temp_dir.rglob('*') if f.is_file()]
+    # Strictly filter out protected files (.enc, .tok, etc.)
+    files_to_wipe = [
+        f for f in temp_dir.rglob('*')
+        if f.is_file() and not is_protected_vault_file(f)
+    ]
     total = len(files_to_wipe)
 
     for i, fp in enumerate(files_to_wipe):
@@ -998,12 +1080,104 @@ def secure_wipe_temp(temp_dir: Path, progress_callback=None) -> int:
         except Exception as e:
             logger.warning(f"Could not wipe {fp}: {e}")
 
+    # Remove empty subdirectories only
     try:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        for root, dirs, _ in os.walk(str(temp_dir), topdown=False):
+            for d in dirs:
+                dir_path = Path(root) / d
+                try:
+                    if not any(dir_path.iterdir()):
+                        dir_path.rmdir()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Never delete drive root or folders that still have remaining/protected files
+    try:
+        resolved = temp_dir.resolve()
+        is_drive_root = (resolved == Path(resolved.anchor).resolve()) or len(resolved.parts) <= 1
+        if not is_drive_root and not any(temp_dir.iterdir()):
+            shutil.rmtree(temp_dir, ignore_errors=True)
     except Exception as e:
-        logger.error(f"Failed to remove temp dir: {e}")
+        logger.debug(f"Did not remove directory: {e}")
 
     logger.info(f"✅ Secure wipe: {wiped}/{total} files erased")
+    return wiped
+
+
+def secure_wipe_source_files(
+    source_dir: Path,
+    files_to_wipe: Optional[List[Path]] = None,
+    progress_callback=None
+) -> int:
+    """
+    Securely erase original plaintext files from the source directory after encryption.
+    Explicitly protects and preserves:
+      - All *.enc files (e.g. vault.enc)
+      - All *.tok files (e.g. lease.tok)
+      - All *.exe binaries (e.g. Zero-Trust.exe, USB_Killswitch.exe)
+      - Key files, config files, and system volume files
+    Never deletes the root drive or root directory.
+    """
+    if not source_dir.exists():
+        return 0
+
+    if files_to_wipe is None:
+        files = [
+            f for f in source_dir.rglob('*')
+            if f.is_file() and not is_protected_vault_file(f)
+        ]
+    else:
+        files = [
+            f for f in files_to_wipe
+            if f.exists() and f.is_file() and not is_protected_vault_file(f)
+        ]
+
+    wiped = 0
+    total = len(files)
+
+    for i, fp in enumerate(files):
+        try:
+            rel = fp.relative_to(source_dir) if fp.is_relative_to(source_dir) else fp.name
+            logger.info(f"  Wiping plaintext file [{i+1}/{total}]: {rel}")
+            if progress_callback:
+                progress_callback(i + 1, total, str(rel))
+
+            size = fp.stat().st_size
+            if size > 0:
+                with open(fp, 'r+b') as f:
+                    f.write(os.urandom(size))
+                    f.flush()
+                    os.fsync(f.fileno())
+            fp.unlink()
+            wiped += 1
+        except Exception as e:
+            logger.warning(f"Could not wipe original file {fp}: {e}")
+
+    # Clean up empty subdirectories left behind (from bottom up)
+    try:
+        for root, dirs, _ in os.walk(str(source_dir), topdown=False):
+            for d in dirs:
+                dir_path = Path(root) / d
+                try:
+                    if not any(dir_path.iterdir()):
+                        dir_path.rmdir()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # If source_dir was a dedicated subfolder that is now empty, remove it (never drive root)
+    try:
+        resolved = source_dir.resolve()
+        is_drive_root = (resolved == Path(resolved.anchor).resolve()) or len(resolved.parts) <= 1
+        if not is_drive_root and not any(source_dir.iterdir()):
+            shutil.rmtree(source_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    logger.info(f"✅ Secure wipe completed: {wiped}/{total} original plaintext files erased.")
     return wiped
 
 

@@ -37,21 +37,44 @@ logger = logging.getLogger(__name__)
 
 def _get_uuid_windows() -> Optional[str]:
     """
-    Query the system UUID via WMI on Windows.
-    Uses 'wmic csproduct get UUID' which returns the SMBIOS UUID.
+    Query the system UUID via WMI / PowerShell or Registry MachineGuid on Windows.
+    Works reliably on modern Windows 11 where wmic.exe is deprecated/removed.
     """
+    # 1. Try Windows MachineGuid from registry (fastest & built into all Windows)
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
+            val, _ = winreg.QueryValueEx(key, "MachineGuid")
+            if val and len(str(val)) > 8:
+                return str(val).strip()
+    except Exception:
+        pass
+
+    # 2. Try PowerShell Get-CimInstance (modern replacement for WMIC)
+    try:
+        result = subprocess.run(
+            ['powershell', '-NoProfile', '-NonInteractive', '-Command', '(Get-CimInstance -ClassName Win32_ComputerSystemProduct).UUID'],
+            capture_output=True, text=True, timeout=5
+        )
+        out = result.stdout.strip()
+        if out and len(out) > 8 and "error" not in out.lower():
+            return out
+    except Exception:
+        pass
+
+    # 3. Try WMIC if present (legacy fallback)
     try:
         result = subprocess.run(
             ['wmic', 'csproduct', 'get', 'UUID'],
             capture_output=True, text=True, timeout=5
         )
         lines = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
-        # Output is: ['UUID', '<actual-uuid>'] — take the second line
         for line in lines:
             if line and line.upper() != 'UUID' and len(line) > 8:
                 return line
-    except Exception as e:
-        logger.warning(f"Windows UUID extraction failed: {e}")
+    except Exception:
+        pass
+
     return None
 
 

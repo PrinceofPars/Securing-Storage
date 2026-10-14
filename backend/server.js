@@ -54,8 +54,17 @@ const DB_PATH      = process.env.DB_PATH      || './data/usb_drives.db';
 const ADMIN_KEY    = process.env.ADMIN_API_KEY || 'dev_admin_key';
 const LEASE_DAYS   = 7;
 
+// Real Google OAuth 2.0 Credentials (https://console.cloud.google.com)
+const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID     || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const GOOGLE_REDIRECT_URI  = process.env.GOOGLE_REDIRECT_URI  || '';
+
 if (JWT_SECRET === 'dev_only_secret_CHANGE_IN_PRODUCTION') {
   console.warn('\n⚠️  WARNING: Using default JWT_SECRET. Set JWT_SECRET in .env before production!\n');
+}
+
+if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+  console.warn('ℹ️  INFO: Real Google OAuth is unconfigured. Set GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET in .env to enforce zero-trust identity verification.\n');
 }
 
 // ──────────────────────────────────────────────
@@ -430,164 +439,280 @@ setInterval(() => {
   }
 }, 60 * 1000);
 
-// Google OAuth / Web Portal Sign-In Entry Point
-app.get('/auth/google', (req, res) => {
-  const reqId = req.query.req || '';
-  const sessionId = req.query.session_id || '';
-  const hintEmail = req.query.email || '';
-  const ownerEmail = getOwnerEmail(req);
+// ──────────────────────────────────────────────
+// Real Google OAuth 2.0 & GIS Helpers
+// ──────────────────────────────────────────────
 
-  if (ownerEmail && !sessionId) {
-    if (reqId) {
-      return res.redirect(`/approve?req=${encodeURIComponent(reqId)}`);
-    }
-    return res.redirect('/dashboard');
+function getGoogleRedirectUri(req) {
+  if (GOOGLE_REDIRECT_URI) return GOOGLE_REDIRECT_URI;
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  const proto = forwardedProto ? forwardedProto.split(',')[0].trim() : req.protocol;
+  const host = req.get('host');
+  return `${proto}://${host}/auth/google/callback`;
+}
+
+function buildGoogleOAuthUrl(req, { reqId, sessionId, redirectUrl, hintEmail }) {
+  if (!GOOGLE_CLIENT_ID) return null;
+  const redirectUri = getGoogleRedirectUri(req);
+  const stateObj = {
+    reqId: reqId || '',
+    sessionId: sessionId || '',
+    redirect: redirectUrl || '',
+    nonce: crypto.randomBytes(8).toString('hex'),
+    ts: Date.now()
+  };
+  const state = Buffer.from(JSON.stringify(stateObj)).toString('base64url');
+
+  const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  authUrl.searchParams.set('client_id', GOOGLE_CLIENT_ID);
+  authUrl.searchParams.set('redirect_uri', redirectUri);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('scope', 'openid email profile');
+  authUrl.searchParams.set('access_type', 'online');
+  authUrl.searchParams.set('prompt', 'select_account');
+  authUrl.searchParams.set('state', state);
+  if (hintEmail) {
+    authUrl.searchParams.set('login_hint', hintEmail);
   }
+  return { authUrl: authUrl.toString(), redirectUri, state };
+}
 
-  // Render modern Google Sign-in selector
-  res.send(`<!DOCTYPE html>
-<html lang="en">
+function renderAuthError(title, message) {
+  return `<!DOCTYPE html>
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sign in with Google — USB Killswitch</title>
+  <title>${title} — USB Killswitch</title>
+  <script>
+    (function() {
+      const saved = localStorage.getItem('theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', saved);
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Roboto', sans-serif; }
+    :root, [data-theme="dark"] {
+      color-scheme: dark;
+      --bg-primary: #0b0f19;
+      --bg-card: #161e31;
+      --border-card: rgba(255, 255, 255, 0.08);
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --danger: #f43f5e;
+      --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.35), 0 16px 36px -6px rgba(0, 0, 0, 0.5);
+    }
+    [data-theme="light"] {
+      color-scheme: light;
+      --bg-primary: #fbf9f5;
+      --bg-card: #ffffff;
+      --border-card: #e5dfd5;
+      --text-primary: #1c1917;
+      --text-secondary: #57534e;
+      --danger: #e11d48;
+      --shadow-card: 0 1px 3px rgba(28, 25, 23, 0.03), 0 16px 36px -6px rgba(44, 38, 30, 0.09);
+    }
     body {
-      background: #0f1117;
-      min-height: 100vh;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: 'Inter', -apple-system, sans-serif;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 20px;
-      color: #e2e8f0;
-    }
-    .auth-card {
-      background: #1a1d28;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 20px;
-      padding: 36px 32px;
-      max-width: 400px;
-      width: 100%;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      min-height: 100vh;
+      margin: 0;
+      padding: 24px;
       text-align: center;
     }
-    .google-logo { width: 44px; height: 44px; margin-bottom: 16px; }
-    h2 { font-size: 20px; font-weight: 500; margin-bottom: 6px; color: #f8fafc; }
-    p { font-size: 13px; color: #94a3b8; margin-bottom: 24px; }
-    .input-box {
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-card);
+      border-radius: 16px;
+      padding: 40px 32px;
+      max-width: 440px;
       width: 100%;
-      padding: 12px 16px;
-      background: #252836;
-      border: 1px solid #3b4252;
-      border-radius: 10px;
-      color: #f8fafc;
-      font-size: 14px;
-      margin-bottom: 16px;
-      outline: none;
+      box-shadow: var(--shadow-card);
     }
-    .input-box:focus { border-color: #4285f4; }
-    .btn-submit {
-      width: 100%;
-      padding: 12px;
-      background: #4285f4;
-      color: white;
-      border: none;
-      border-radius: 10px;
-      font-size: 14px;
-      font-weight: 500;
-      cursor: pointer;
-      display: flex;
+    .icon {
+      width: 56px; height: 56px;
+      background: rgba(244, 63, 94, 0.15);
+      border: 1px solid rgba(244, 63, 94, 0.3);
+      color: var(--danger);
+      border-radius: 50%;
+      display: inline-flex;
       align-items: center;
       justify-content: center;
-      gap: 10px;
-      transition: background 0.2s;
-    }
-    .btn-submit:hover { background: #3367d6; }
-    .req-badge {
-      background: rgba(99, 102, 241, 0.15);
-      color: #818cf8;
-      border: 1px solid rgba(99, 102, 241, 0.3);
-      padding: 6px 12px;
-      border-radius: 20px;
-      font-size: 12px;
-      display: inline-block;
       margin-bottom: 18px;
+    }
+    h2 { margin: 0 0 10px; font-size: 20px; color: var(--danger); font-weight: 700; }
+    p { color: var(--text-secondary); font-size: 13px; line-height: 1.5; margin: 0 0 24px; }
+    .btn {
+      display: inline-block;
+      background: #4f46e5;
+      color: #ffffff;
+      padding: 10px 22px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 13px;
     }
   </style>
 </head>
 <body>
-  <div class="auth-card">
-    <svg class="google-logo" viewBox="0 0 24 24">
-      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
-      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-    </svg>
-    <h2>Sign in with Google</h2>
-    <p>to manage your USB Vaults & authorize access</p>
-
-    ${reqId ? `<div class="req-badge">Pending Request: <strong>${reqId}</strong></div>` : ''}
-    ${sessionId ? `<div class="req-badge">Connecting Desktop Client App</div>` : ''}
-
-    <form method="POST" action="/auth/google/callback">
-      <input type="hidden" name="req" value="${reqId}">
-      <input type="hidden" name="session_id" value="${sessionId}">
-      <input type="email" name="email" class="input-box" placeholder="Enter your Google account email" value="${hintEmail}" required autofocus>
-      <button type="submit" class="btn-submit">
-        Continue with Google
-      </button>
-    </form>
+  <div class="card">
+    <div class="icon">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    </div>
+    <h2>${title}</h2>
+    <p>${message}</p>
+    <a href="/auth/google" class="btn">Try Again</a>
   </div>
 </body>
-</html>`);
-});
+</html>`;
+}
 
-app.post('/auth/google/callback', express.urlencoded({ extended: true }), (req, res) => {
-  const { email, req: reqId, session_id: sessionId } = req.body;
-  if (!email) return res.redirect('/auth/google');
-
-  const normalizedEmail = email.toLowerCase().trim();
-  const token = createOwnerToken(normalizedEmail);
+function handleSuccessfulGoogleAuth(req, res, { verifiedEmail, reqId, sessionId, redirectUrl }) {
+  const token = createOwnerToken(verifiedEmail);
   res.setHeader('Set-Cookie', `owner_session=${encodeURIComponent(token)}; Path=/; Max-Age=${30 * 24 * 60 * 60}; SameSite=Lax`);
 
-  // If this was initiated from the desktop client app
+  // If initiated from Desktop Client App (init, approval, or unlock)
   if (sessionId) {
     googleClientSessions.set(sessionId, {
-      email: normalizedEmail,
+      email: verifiedEmail,
       token,
       timestamp: Date.now()
     });
 
     return res.send(`<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
-  <title>Signed In — USB Killswitch</title>
+  <title>Signed In — Zero-Trust Storage</title>
+  <script>
+    (function() {
+      const saved = localStorage.getItem('theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', saved);
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    body { background: #0f1117; color: #f8fafc; font-family: sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; text-align: center; }
-    .card { background: #1a1d28; padding: 40px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.1); max-width: 420px; }
-    .icon { font-size: 48px; margin-bottom: 16px; }
-    h2 { margin-bottom: 8px; font-size: 22px; color: #34d399; }
-    p { color: #94a3b8; font-size: 14px; line-height: 1.5; }
-    .email-badge { background: #252836; padding: 6px 14px; border-radius: 8px; color: #818cf8; font-weight: bold; margin: 12px 0; display: inline-block; }
+    :root, [data-theme="dark"] {
+      color-scheme: dark;
+      --bg-primary: #0b0f19;
+      --bg-card: #161e31;
+      --border-card: rgba(255, 255, 255, 0.08);
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --badge-bg: rgba(16, 185, 129, 0.15);
+      --badge-text: #34d399;
+      --badge-border: rgba(16, 185, 129, 0.3);
+      --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.35), 0 16px 36px -6px rgba(0, 0, 0, 0.5);
+    }
+    [data-theme="light"] {
+      color-scheme: light;
+      --bg-primary: #fbf9f5;
+      --bg-card: #ffffff;
+      --border-card: #e5dfd5;
+      --text-primary: #1c1917;
+      --text-secondary: #57534e;
+      --badge-bg: #ecfdf5;
+      --badge-text: #059669;
+      --badge-border: #a7f3d0;
+      --shadow-card: 0 1px 3px rgba(28, 25, 23, 0.03), 0 16px 36px -6px rgba(44, 38, 30, 0.09);
+    }
+    body {
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: 'Inter', -apple-system, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      text-align: center;
+      padding: 24px 16px;
+      margin: 0;
+    }
+    .card {
+      background: var(--bg-card);
+      padding: 44px 36px;
+      border-radius: 18px;
+      border: 1px solid var(--border-card);
+      max-width: 440px;
+      width: 100%;
+      box-shadow: var(--shadow-card);
+    }
+    .icon-wrap {
+      width: 60px; height: 60px;
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 18px;
+      color: #34d399;
+    }
+    h2 { margin: 0 0 8px 0; font-size: 21px; color: #34d399; font-weight: 700; }
+    p { color: var(--text-secondary); font-size: 13px; line-height: 1.5; margin: 8px 0 16px 0; }
+    .email-badge {
+      background: var(--badge-bg);
+      border: 1px solid var(--badge-border);
+      padding: 6px 14px;
+      border-radius: 20px;
+      color: var(--badge-text);
+      font-weight: 600;
+      font-size: 13px;
+      display: inline-block;
+      margin-bottom: 20px;
+    }
+    .return-banner {
+      background: rgba(99, 102, 241, 0.12);
+      border: 1px solid rgba(99, 102, 241, 0.25);
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 12px;
+      color: #a5b4fc;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .spinner {
+      width: 14px; height: 14px;
+      border: 2px solid rgba(99, 102, 241, 0.3);
+      border-top-color: #818cf8;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
   <div class="card">
-    <div class="icon">✅</div>
-    <h2>Google Sign-In Verified</h2>
-    <div class="email-badge">${normalizedEmail}</div>
-    <p>Your Google account has been verified. You can now return to the USB Killswitch Desktop App!</p>
+    <div class="icon-wrap">
+      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+    </div>
+    <h2>Google Identity Verified</h2>
+    <div class="email-badge">✓ ${verifiedEmail}</div>
+    <p>Your Google account identity has been cryptographically verified. Returning you directly to the Desktop Application...</p>
+    <div class="return-banner">
+      <div class="spinner"></div>
+      <span>Switching back to Zero-Trust Desktop App...</span>
+    </div>
   </div>
+  <script>
+    setTimeout(() => {
+      try { window.close(); } catch(e) {}
+    }, 1500);
+  </script>
 </body>
 </html>`);
   }
 
   if (reqId) {
-    // If there is a pending request, attach the verified Google email to the request
     try {
       const request = db.prepare(`
         SELECT pr.*, d.owner_email FROM pending_requests pr
@@ -596,11 +721,11 @@ app.post('/auth/google/callback', express.urlencoded({ extended: true }), (req, 
       `).get(reqId);
 
       if (request) {
-        if (request.owner_email.toLowerCase() !== normalizedEmail) {
-          db.prepare('UPDATE pending_requests SET requester_email = ? WHERE request_id = ?').run(normalizedEmail, reqId);
-          console.log(`🌐 Google Auth: Verified guest ${normalizedEmail} attached to request ${reqId}`);
+        if (request.owner_email.toLowerCase() !== verifiedEmail) {
+          db.prepare('UPDATE pending_requests SET requester_email = ? WHERE request_id = ?').run(verifiedEmail, reqId);
+          console.log(`🌐 Google Auth: Verified guest ${verifiedEmail} attached to request ${reqId}`);
         } else {
-          console.log(`👑 Google Auth: Verified owner ${normalizedEmail} logged in for request ${reqId}`);
+          console.log(`👑 Google Auth: Verified owner ${verifiedEmail} logged in for request ${reqId}`);
         }
       }
     } catch (e) {
@@ -609,8 +734,493 @@ app.post('/auth/google/callback', express.urlencoded({ extended: true }), (req, 
     return res.redirect(`/approve?req=${encodeURIComponent(reqId)}`);
   }
 
-  return res.redirect('/dashboard');
+  return res.redirect(redirectUrl || '/dashboard');
+}
+
+// Google OAuth / Web Portal Sign-In Entry Point
+app.get('/auth/google', (req, res) => {
+  const reqId = req.query.req || '';
+  const sessionId = req.query.session_id || '';
+  const hintEmail = req.query.email || '';
+  const redirectUrl = req.query.redirect || '';
+  const ownerEmail = getOwnerEmail(req);
+
+  if (ownerEmail && !sessionId) {
+    if (reqId) {
+      return res.redirect(`/approve?req=${encodeURIComponent(reqId)}`);
+    }
+    return res.redirect(redirectUrl || '/dashboard');
+  }
+
+  const oauthInfo = buildGoogleOAuthUrl(req, { reqId, sessionId, redirectUrl, hintEmail });
+  const hasRealOAuth = Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
+  const isProd = process.env.NODE_ENV === 'production';
+  const redirectUri = getGoogleRedirectUri(req);
+
+  // When Google OAuth credentials are configured, immediately jump directly to Google's account chooser screen!
+  if (oauthInfo) {
+    return res.redirect(oauthInfo.authUrl);
+  }
+
+  res.send(`<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in with Google — Zero-Trust Protection</title>
+  <script>
+    (function() {
+      const saved = localStorage.getItem('theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', saved);
+    })();
+  </script>
+  ${hasRealOAuth ? '<script src="https://accounts.google.com/gsi/client" async defer></script>' : ''}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root, [data-theme="dark"] {
+      color-scheme: dark;
+      --bg-primary: #0b0f19;
+      --bg-card: #161e31;
+      --border-card: rgba(255, 255, 255, 0.08);
+      --border-glass: rgba(255, 255, 255, 0.1);
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --input-bg: #0f172a;
+      --input-border: rgba(255, 255, 255, 0.12);
+      --badge-bg: rgba(99, 102, 241, 0.18);
+      --badge-text: #a5b4fc;
+      --badge-border: rgba(99, 102, 241, 0.35);
+      --btn-grad: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
+      --grid-pattern: radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+      --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.35), 0 16px 36px -6px rgba(0, 0, 0, 0.5);
+    }
+    [data-theme="light"] {
+      color-scheme: light;
+      --bg-primary: #faf7f2;
+      --bg-card: #ffffff;
+      --border-card: #e5dfd5;
+      --border-glass: #e2ddd3;
+      --text-primary: #1c1917;
+      --text-secondary: #57534e;
+      --text-muted: #8c827a;
+      --input-bg: #fbf9f5;
+      --input-border: #e2ddd3;
+      --badge-bg: #eef2ff;
+      --badge-text: #4338ca;
+      --badge-border: #c7d2fe;
+      --btn-grad: linear-gradient(135deg, #4338ca 0%, #6366f1 100%);
+      --grid-pattern: radial-gradient(rgba(28, 25, 23, 0.04) 1px, transparent 1px);
+      --shadow-card: 0 1px 3px rgba(28, 25, 23, 0.03), 0 16px 36px -6px rgba(44, 38, 30, 0.09);
+    }
+    body {
+      background-color: var(--bg-primary);
+      background-image: var(--grid-pattern);
+      background-size: 24px 24px;
+      color: var(--text-primary);
+      font-family: 'Inter', -apple-system, sans-serif;
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+      position: relative;
+      overflow-x: hidden;
+      transition: background-color 0.2s ease, color 0.2s ease;
+    }
+    .top-bar {
+      position: absolute;
+      top: 18px; right: 24px;
+      z-index: 10;
+    }
+    .theme-toggle {
+      background: var(--bg-card);
+      border: 1px solid var(--border-card);
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      transition: all 0.2s ease;
+    }
+    .theme-toggle:hover {
+      border-color: var(--border-glass);
+      color: var(--text-primary);
+    }
+    .auth-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-card);
+      border-radius: 18px;
+      box-shadow: var(--shadow-card);
+      max-width: 440px;
+      width: 100%;
+      padding: 36px 30px;
+      text-align: center;
+      position: relative;
+      z-index: 2;
+      backdrop-filter: blur(16px);
+    }
+    .logo-wrap {
+      width: 58px; height: 58px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-card);
+      border-radius: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 18px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+    }
+    .google-logo { width: 30px; height: 30px; }
+    h2 {
+      margin: 0 0 6px 0;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+    p {
+      color: var(--text-secondary);
+      font-size: 13px;
+      margin: 0 0 20px 0;
+      line-height: 1.45;
+    }
+    .req-badge {
+      display: inline-block;
+      background: var(--badge-bg);
+      border: 1px solid var(--badge-border);
+      color: var(--badge-text);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 12px;
+      border-radius: 14px;
+      margin-bottom: 20px;
+    }
+    .btn-google {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      width: 100%;
+      box-sizing: border-box;
+      background: #ffffff;
+      color: #1f2937;
+      border: 1px solid #d1d5db;
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      transition: background 0.15s, transform 0.1s;
+    }
+    .btn-google:hover {
+      background: #f8fafc;
+      transform: translateY(-1px);
+    }
+    .security-note {
+      margin-top: 18px;
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+    }
+    .setup-box {
+      background: rgba(245, 158, 11, 0.08);
+      border: 1px solid rgba(245, 158, 11, 0.25);
+      border-radius: 10px;
+      padding: 14px;
+      text-align: left;
+      margin-bottom: 18px;
+      font-size: 12px;
+    }
+    .setup-title {
+      font-weight: 700;
+      color: #f59e0b;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .setup-desc {
+      color: var(--text-secondary);
+      line-height: 1.4;
+      margin-bottom: 8px;
+    }
+    .code-snippet {
+      background: #0a0e17;
+      color: #38bdf8;
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-family: Consolas, monospace;
+      font-size: 11px;
+      word-break: break-all;
+    }
+    .dev-bypass {
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px dashed var(--border-card);
+    }
+    .input-box {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--input-border);
+      background: var(--input-bg);
+      color: var(--text-primary);
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+    .btn-dev {
+      width: 100%;
+      background: #334155;
+      color: #f8fafc;
+      border: none;
+      padding: 9px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="top-bar">
+    <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle visual theme">
+      <span id="themeIcon">☀️</span>
+      <span id="themeLabel">Light Ivory</span>
+    </button>
+  </div>
+  <div class="auth-card">
+    <div class="logo-wrap">
+      <svg class="google-logo" viewBox="0 0 24 24">
+        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+      </svg>
+    </div>
+    <h2>Sign in with Google</h2>
+    <p>to manage your USB Vaults & authorize access</p>
+
+    ${reqId ? `<div class="req-badge">Pending Request: <strong>${reqId}</strong></div>` : ''}
+    ${sessionId ? `<div class="req-badge">Connecting Desktop Client App</div>` : ''}
+
+    ${hasRealOAuth ? `
+      <!-- Official Google OAuth 2.0 Redirect Button -->
+      <a href="${oauthInfo.authUrl}" class="btn-google">
+        <svg class="google-logo" style="width:18px;height:18px;" viewBox="0 0 24 24">
+          <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+          <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+          <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+          <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+        </svg>
+        <span>Continue with Google</span>
+      </a>
+
+      <!-- Google Identity Services One Tap / Standard Hook -->
+      <div id="g_id_onload"
+           data-client_id="${GOOGLE_CLIENT_ID}"
+           data-context="signin"
+           data-ux_mode="redirect"
+           data-login_uri="${redirectUri}"
+           data-auto_prompt="false">
+      </div>
+      <div class="security-note">
+        <span>🛡️ Cryptographically verified by Google. Email identity cannot be forged.</span>
+      </div>
+    ` : `
+      <!-- Unconfigured Notice -->
+      <div class="setup-box">
+        <div class="setup-title">🔒 Real Google OAuth Credentials Required</div>
+        <div class="setup-desc">To prevent email infringement and guarantee identity authenticity, configure your Google Cloud OAuth Client ID in <code>backend/.env</code>:</div>
+        <div class="code-snippet">GOOGLE_CLIENT_ID=your-id.apps.googleusercontent.com<br>GOOGLE_CLIENT_SECRET=your-secret</div>
+        <div style="margin-top:8px;font-size:11px;color:var(--text-muted);">Redirect URI: <code>${redirectUri}</code></div>
+      </div>
+
+      ${!isProd ? `
+        <div class="dev-bypass">
+          <p style="font-size:12px;color:#f59e0b;margin-bottom:8px;"><strong>🧪 Development Mock Mode (Unverified)</strong><br>For local testing only. Blocked in production.</p>
+          <form method="POST" action="/auth/google/callback">
+            <input type="hidden" name="req" value="${reqId}">
+            <input type="hidden" name="session_id" value="${sessionId}">
+            <input type="hidden" name="redirect" value="${redirectUrl}">
+            <input type="email" name="email" class="input-box" placeholder="Enter test email address" value="${hintEmail}" required>
+            <button type="submit" class="btn-dev">Continue (Dev Mock)</button>
+          </form>
+        </div>
+      ` : `
+        <p style="color:#ef4444;font-size:12px;"><strong>Production Mode Active:</strong> Unverified email logins are permanently disabled. Set GOOGLE_CLIENT_ID on Render.</p>
+      `}
+    `}
+  </div>
+  <script>
+    function updateThemeUI(t) {
+      document.getElementById('themeIcon').textContent = t === 'dark' ? '☀️' : '🌙';
+      document.getElementById('themeLabel').textContent = t === 'dark' ? 'Light Ivory' : 'Dark Mode';
+    }
+    function toggleTheme() {
+      const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+      const nxt = cur === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', nxt);
+      localStorage.setItem('theme', nxt);
+      updateThemeUI(nxt);
+    }
+    const t = localStorage.getItem('theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', t);
+    updateThemeUI(t);
+  </script>
+</body>
+</html>`);
 });
+
+// Google OAuth 2.0 Redirect Callback (GET from Google servers)
+app.get('/auth/google/callback', async (req, res) => {
+  const { code, state, error } = req.query;
+
+  if (error) {
+    console.warn('Google OAuth error callback:', error);
+    return res.status(400).send(renderAuthError('Google Sign-In Cancelled', `Google returned error: ${error}`));
+  }
+
+  if (!code) {
+    return res.redirect('/auth/google');
+  }
+
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+    return res.status(500).send(renderAuthError('OAuth Not Configured', 'Server is missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET.'));
+  }
+
+  let stateObj = {};
+  if (state) {
+    try {
+      stateObj = JSON.parse(Buffer.from(state, 'base64url').toString('utf-8'));
+    } catch (e) {
+      console.warn('Failed to parse Google OAuth state:', e.message);
+    }
+  }
+
+  const reqId = stateObj.reqId || '';
+  const sessionId = stateObj.sessionId || '';
+  const redirectUrl = stateObj.redirect || '';
+  const redirectUri = getGoogleRedirectUri(req);
+
+  try {
+    // 1. Exchange authorization code for tokens
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code'
+      })
+    });
+
+    if (!tokenResponse.ok) {
+      const errText = await tokenResponse.text();
+      console.error('Google token exchange error:', errText);
+      return res.status(400).send(renderAuthError('Token Exchange Failed', 'Could not exchange authorization code with Google.'));
+    }
+
+    const tokenData = await tokenResponse.json();
+
+    // 2. Fetch user profile from Google OpenID Connect endpoint
+    const userinfoResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` }
+    });
+
+    if (!userinfoResponse.ok) {
+      return res.status(400).send(renderAuthError('Profile Verification Failed', 'Could not retrieve verified profile from Google.'));
+    }
+
+    const userinfo = await userinfoResponse.json();
+
+    if (!userinfo.email || (userinfo.email_verified !== true && userinfo.email_verified !== 'true')) {
+      return res.status(403).send(renderAuthError('Unverified Google Email', 'This Google account does not have a verified email address.'));
+    }
+
+    const verifiedEmail = userinfo.email.toLowerCase().trim();
+    console.log(`✅ Google OAuth 2.0 Verified: ${verifiedEmail} (${userinfo.name || 'User'})`);
+
+    return handleSuccessfulGoogleAuth(req, res, {
+      verifiedEmail,
+      reqId,
+      sessionId,
+      redirectUrl
+    });
+
+  } catch (err) {
+    console.error('Google OAuth callback exception:', err);
+    return res.status(500).send(renderAuthError('Authentication Error', err.message));
+  }
+});
+
+// Google Identity Services (GIS) / Credential Callback (POST)
+app.post('/auth/google/callback', express.urlencoded({ extended: true }), async (req, res) => {
+  const { credential, email, req: reqId, session_id: sessionId, redirect: redirectUrl } = req.body;
+
+  // Case A: Real Google Identity Services ID Token credential
+  if (credential) {
+    try {
+      const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+      if (!verifyRes.ok) {
+        return res.status(401).send(renderAuthError('Invalid Google Credential', 'Google could not verify the provided ID token.'));
+      }
+      const payload = await verifyRes.json();
+
+      if (GOOGLE_CLIENT_ID && payload.aud !== GOOGLE_CLIENT_ID) {
+        return res.status(403).send(renderAuthError('Audience Mismatch', 'The Google token was issued for a different client ID.'));
+      }
+
+      if (!payload.email || (payload.email_verified !== 'true' && payload.email_verified !== true)) {
+        return res.status(403).send(renderAuthError('Unverified Google Email', 'This Google email is not verified.'));
+      }
+
+      const verifiedEmail = payload.email.toLowerCase().trim();
+      console.log(`✅ Google GIS Verified: ${verifiedEmail}`);
+
+      return handleSuccessfulGoogleAuth(req, res, {
+        verifiedEmail,
+        reqId,
+        sessionId,
+        redirectUrl
+      });
+    } catch (err) {
+      console.error('GIS token verification error:', err);
+      return res.status(500).send(renderAuthError('Verification Error', err.message));
+    }
+  }
+
+  // Case B: Dev mock bypass (ONLY permitted if not in production and real OAuth is unconfigured)
+  if (process.env.NODE_ENV !== 'production' && !GOOGLE_CLIENT_ID && email) {
+    const verifiedEmail = email.toLowerCase().trim();
+    console.log(`🧪 Dev Mock Auth (Unverified): ${verifiedEmail}`);
+    return handleSuccessfulGoogleAuth(req, res, {
+      verifiedEmail,
+      reqId,
+      sessionId,
+      redirectUrl
+    });
+  }
+
+  return res.status(403).send(renderAuthError('Unauthorized', 'Direct unverified email submission is strictly prohibited.'));
+});
+
 
 // Check if desktop client session has been completed via Google Sign-In
 app.get('/api/auth/google/check-session', (req, res) => {
@@ -661,7 +1271,35 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
       });
     }
 
-    // Check trusted devices
+    // ──────────────────────────────────────────────
+    // Filter Level 1: Verify Google Account Identity & Authorization
+    // ──────────────────────────────────────────────
+    if (!email) {
+      logAuthEvent(drive_id, fingerprint_hash, '', 'DENIED_NO_EMAIL', req);
+      return res.status(403).json({
+        status:  'DENIED',
+        message: 'Google identity required. Please verify your email via Sign in with Google.'
+      });
+    }
+
+    const isOwner = (email === drive.owner_email.toLowerCase());
+    const accessEntry = db.prepare(
+      'SELECT allowed_email FROM access_list WHERE drive_id = ? AND allowed_email = ?'
+    ).get(drive_id, email);
+    const isAllowedUser = Boolean(accessEntry);
+
+    if (!isOwner && !isAllowedUser) {
+      logAuthEvent(drive_id, fingerprint_hash, email, 'DENIED_UNAUTHORIZED_EMAIL', req);
+      console.warn(`🛑 Level 1 Filter Blocked: Email ${email} is not authorized for drive ${drive_id}`);
+      return res.status(403).json({
+        status:  'DENIED',
+        message: `Account '${email}' is not authorized. You must be the drive owner or invited to this drive's access list.`
+      });
+    }
+
+    // ──────────────────────────────────────────────
+    // Filter Level 2: Verify Host Hardware Fingerprint
+    // ──────────────────────────────────────────────
     const trustedDevice = db.prepare(
       'SELECT * FROM trusted_devices WHERE drive_id = ? AND hardware_fingerprint = ?'
     ).get(drive_id, fingerprint_hash);

@@ -44,11 +44,30 @@ npm install
 npm start
 ```
 
-### Live Deployed Backend Services
+### Live Deployed Backend Services (Default / Production)
 - 🌐 **Web Dashboard**: `https://securing-storage.onrender.com/dashboard`
 - 📱 **Mobile Approval Portal**: `https://securing-storage.onrender.com/approve`
 - 🔑 **Google Sign-In Entry**: `https://securing-storage.onrender.com/auth/google`
 - 📡 **Health Check API**: `https://securing-storage.onrender.com/api/health`
+
+### 🌐 Server Environments (Production vs. Development)
+
+- **Default Mode (Strict Production)**:
+  By default, the client (both standalone `.exe` and Python script) strictly routes all traffic to the live production server at:
+  👉 **`https://securing-storage.onrender.com`**
+  *(Even if a drive was previously initialized during local testing, production mode automatically overrides any legacy localhost config).*
+
+- **Development Mode (Local Server)**:
+  To explicitly run in local development mode against `http://localhost:3000`, set `USB_ENV=dev`:
+  ```powershell
+  # In PowerShell:
+  $env:USB_ENV = "dev"
+  python usb_client/gui.py
+  ```
+  To switch back to Production at any time:
+  ```powershell
+  $env:USB_ENV = $null
+  ```
 
 ---
 
@@ -57,12 +76,25 @@ npm start
 #### 🌟 Recommended: Single-File Portable Executable
 The desktop application is compiled into a single `.exe` file that contains all Python runtimes, cryptography, and UI assets.
 
-- **File Location**: `dist/USB_Killswitch.exe`
-- **Deployment**: Copy **`dist/USB_Killswitch.exe`** directly to your USB drive root (e.g., `D:\USB_Killswitch.exe`) and double-click to run.
+- **File Location**: `dist/Zero-Trust_V3.exe`
+- **Deployment**: Copy **`dist/Zero-Trust_V3.exe`** directly to your USB drive root (e.g., `D:\Zero-Trust_V3.exe`) and double-click to run.
 
-> [!NOTE]
-> **Fix for `Failed to load Python DLL '_internal'` Error**:
-> If you previously copied only the `.exe` from a folder build, Windows could not find the sibling `_internal` directory. The new **`dist/USB_Killswitch.exe`** is a standalone single-file build (`--onefile`) with no external folder dependencies.
+#### 🔨 Building / Rebuilding the Executable with PyInstaller
+Whenever you modify Python code in `usb_client/` (`gui.py`, `crypto_engine.py`, `lease_manager.py`, or `fingerprint.py`), run this command from the project root to generate the updated standalone `.exe`:
+
+```powershell
+python -m PyInstaller --noconfirm --clean --onefile --noconsole --name "Zero-Trust_V3" --paths usb_client --collect-all customtkinter --hidden-import PIL --hidden-import PIL._tkinter_finder --hidden-import qrcode --hidden-import jwt --hidden-import cryptography --hidden-import requests usb_client/gui.py
+```
+
+> **PyInstaller Flags Explained**:
+> - `--onefile`: Packages everything into a single, self-contained `.exe` with zero external folder dependencies.
+> - `--noconsole`: Launches as a clean GUI application without popping up a black command prompt window.
+> - `--name "Zero-Trust_V3"`: Names the output binary `Zero-Trust_V3.exe` inside the `dist/` directory.
+> - `--paths usb_client`: Ensures local client modules (`crypto_engine`, `fingerprint`, `lease_manager`) are included.
+> - `--collect-all customtkinter`: Embeds CustomTkinter dark-mode themes, color json files, and fonts.
+> - `--hidden-import ...`: Bundles cryptographic, JWT, imaging, and QR code dependencies.
+
+*Tip: You can also simply run the provided `build_exe.bat` script in the root folder to rebuild automatically.*
 
 #### Alternative: Run from Python Source
 ```bash
@@ -252,7 +284,7 @@ node test_all_advanced_scenarios.js
 
 | Path | Description |
 |---|---|
-| **`dist/USB_Killswitch.exe`** | **Standalone Single-File Executable** (Portable, zero dependencies) |
+| **`dist/Zero-Trust_V3.exe`** | **Standalone Single-File Executable** (Portable, zero dependencies) |
 | **`backend/server.js`** | Express backend API, auth engine, session manager, and routes |
 | **`backend/public/index.html`** | Web Admin & Owner Management Dashboard |
 | **`backend/public/approve.html`** | Mobile Glassmorphism Device Approval Portal |

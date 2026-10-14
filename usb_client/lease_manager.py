@@ -30,6 +30,14 @@ from cryptography.hazmat.backends import default_backend
 
 logger = logging.getLogger(__name__)
 
+try:
+    import crypto_engine as ce
+except ImportError:
+    try:
+        from usb_client import crypto_engine as ce
+    except ImportError:
+        ce = None
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
@@ -142,8 +150,10 @@ def save_lease_token(
     # If vault_path is provided and exists, encapsulate directly inside vault header
     if vault_path and vault_path.exists():
         try:
-            import usb_client.crypto_engine as ce
-            ce.update_vault_header(vault_path, lease_data=lease_envelope)
+            _ce = ce
+            if _ce is None:
+                import crypto_engine as _ce
+            _ce.update_vault_header(vault_path, lease_data=lease_envelope)
             logger.info(f"Lease token encapsulated into vault header: {vault_path}")
             # Remove any loose lease file if it exists
             if lease_path and lease_path.exists():
@@ -174,8 +184,10 @@ def load_lease_token(
     # Check encapsulated vault header first
     if vault_path and vault_path.exists():
         try:
-            import usb_client.crypto_engine as ce
-            header_data = ce.read_vault_header(vault_path)
+            _ce = ce
+            if _ce is None:
+                import crypto_engine as _ce
+            header_data = _ce.read_vault_header(vault_path)
             if header_data and header_data.get('lease'):
                 envelope = header_data['lease']
         except Exception as e:
@@ -229,8 +241,10 @@ def clear_lease_token(
     """Clear lease token from vault header and remove loose lease file."""
     if vault_path and vault_path.exists():
         try:
-            import usb_client.crypto_engine as ce
-            ce.update_vault_header(vault_path, clear_lease=True)
+            _ce = ce
+            if _ce is None:
+                import crypto_engine as _ce
+            _ce.update_vault_header(vault_path, clear_lease=True)
             logger.info(f"Cleared lease token in vault header: {vault_path}")
         except Exception as e:
             logger.warning(f"Failed to clear lease in vault header: {e}")

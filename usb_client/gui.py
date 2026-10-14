@@ -77,7 +77,48 @@ CONFIG_FILE    = BASE_DIR / 'config.json'
 LOCAL_KEY_FILE = BASE_DIR / 'local_key.bin'
 VAULT_FILE     = BASE_DIR / 'vault.enc'
 LEASE_FILE     = BASE_DIR / 'lease.tok'
-DEFAULT_API    = os.environ.get('USB_API_URL', 'https://securing-storage.onrender.com')
+PROD_API_URL   = 'https://securing-storage.onrender.com'
+DEV_API_URL    = 'http://localhost:3000'
+
+def is_dev_mode() -> bool:
+    """Return True only if explicitly running in development mode."""
+    env_val = os.environ.get('USB_ENV', '').strip().lower()
+    mode_val = os.environ.get('USB_MODE', '').strip().lower()
+    api_override = os.environ.get('USB_API_URL', '').strip().lower()
+    if env_val in ('dev', 'development', 'local'):
+        return True
+    if mode_val in ('dev', 'development', 'local'):
+        return True
+    if api_override and ('localhost' in api_override or '127.0.0.1' in api_override):
+        return True
+    return False
+
+def get_api_url(config: Optional[dict] = None) -> str:
+    """
+    Return backend API URL.
+    Strictly defaults to production Render URL ('https://securing-storage.onrender.com')
+    unless explicitly running in development mode.
+    """
+    # 1. Explicit custom URL override via USB_API_URL
+    custom_url = os.environ.get('USB_API_URL', '').strip()
+    if custom_url:
+        return custom_url.rstrip('/')
+
+    # 2. Explicit development mode (e.g. USB_ENV=dev)
+    if is_dev_mode():
+        return DEV_API_URL
+
+    # 3. Default is strictly PROD_API_URL
+    # If drive config contains localhost from previous local dev test, ignore it in production mode.
+    if config and config.get('api_url'):
+        saved_url = config['api_url'].rstrip('/')
+        if 'localhost' in saved_url or '127.0.0.1' in saved_url:
+            return PROD_API_URL
+        return saved_url
+
+    return PROD_API_URL
+
+DEFAULT_API    = get_api_url()
 
 def set_base_dir(new_path: Path):
     global BASE_DIR, CONFIG_FILE, LOCAL_KEY_FILE, VAULT_FILE, LEASE_FILE
@@ -208,7 +249,7 @@ class USBKillswitchApp(ctk.CTk):
         self._poll_stop   = threading.Event()
         self._timer_id    = None
 
-        # Route initial screen
+        # Route initial screen: check if vault exists and if an authorized offline lease is valid
         v_exists = VAULT_FILE.exists()
         hdr = None
         if v_exists:
@@ -217,15 +258,110 @@ class USBKillswitchApp(ctk.CTk):
             except Exception:
                 pass
 
-        if hdr and hdr.get('config') and hdr.get('k_local'):
-            self._show_unlock_screen()
-        elif load_config() and load_local_key() and v_exists:
-            self._show_unlock_screen()
+        has_vault = bool(
+            (hdr and hdr.get('config') and hdr.get('k_local')) or
+            (load_config() and load_local_key() and v_exists)
+        )
+
+        if has_vault:
+            if not self._try_startup_auto_unlock():
+                self._show_unlock_screen()
         else:
             self._show_init_screen()
 
         # Handle window close
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _show_splash_screen(self, message: str = "Authorizing hardware identity..."):
+        self._clear_window()
+        frame = ctk.CTkFrame(self, fg_color="transparent")
+        frame.pack(fill="both", expand=True)
+
+        center = ctk.CTkFrame(frame, fg_color=COLORS['bg_card'], corner_radius=16,
+                             border_width=1, border_color=COLORS['border'])
+        center.place(relx=0.5, rely=0.5, anchor="center")
+
+        ctk.CTkLabel(center, text="🔒 SECURE VAULT ACCESS",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=COLORS['accent']).pack(padx=60, pady=(32, 6))
+
+        config = load_config()
+        label = config.get('label', 'USB Storage Vault') if config else 'USB Storage Vault'
+        ctk.CTkLabel(center, text=label,
+                     font=ctk.CTkFont(size=22, weight="bold"),
+                     text_color=COLORS['text']).pack(padx=60, pady=(0, 16))
+
+        self.startup_status = ctk.CTkLabel(center, text=message,
+                                           font=ctk.CTkFont(size=13),
+                                           text_color=COLORS['warning'])
+        self.startup_status.pack(padx=60, pady=(0, 32))
+
+    def _focus_window(self):
+        """Bring the application window to the foreground and focus it."""
+        try:
+            self.deiconify()  # restore if minimized
+            self.lift()
+            self.attributes('-topmost', True)
+            self.after(200, lambda: self.attributes('-topmost', False))
+            self.focus_force()
+
+            if sys.platform == 'win32':
+                import ctypes
+                hwnd = self.winfo_id()
+                try:
+                    target_hwnd = ctypes.windll.user32.FindWindowW(None, "Zero-Trust Storage Protection")
+                    if target_hwnd:
+                        hwnd = target_hwnd
+                except Exception:
+                    pass
+                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE = 9
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except Exception as e:
+            logger.debug(f"Could not force foreground window: {e}")
+
+    def _try_startup_auto_unlock(self) -> bool:
+        """
+        Check if an active offline lease token exists for this host system.
+        If valid and bound to the current hardware fingerprint, auto-unlock and
+        transition directly to the workspace file tree.
+        """
+        try:
+            config = load_config()
+            k_local = load_local_key()
+            if not config or not k_local or not VAULT_FILE.exists():
+                return False
+
+            fp_hash = fp_module.generate_fingerprint()
+            self._current_fingerprint = fp_hash
+            drive_id = config.get('drive_id', '')
+
+            lease = lm.load_lease_token(LEASE_FILE, k_local, drive_id, vault_path=VAULT_FILE)
+            if not lease:
+                return False
+
+            now = int(time.time())
+            expires_at = lease.get('expires_at', 0)
+            lease_fp = lease.get('fingerprint', '')
+            cks = lease.get('cloud_key_share')
+
+            if not cks or now >= expires_at:
+                logger.info("Startup check: lease token missing key share or expired.")
+                return False
+
+            if fp_hash.lower() != lease_fp.lower():
+                logger.info("Startup check: lease hardware fingerprint does not match current host machine.")
+                return False
+
+            logger.info("Valid offline lease detected for authorized host hardware. Directly opening vault workspace...")
+            self._show_splash_screen("Authorizing hardware identity...")
+            self.after(50, lambda: self._load_vault_workspace(
+                k_local, cks, "Offline Lease (Auto)", "Authorized offline session active"
+            ))
+            return True
+
+        except Exception as e:
+            logger.warning(f"Startup auto-unlock check encountered error: {e}")
+            return False
 
     # ──────────────────────────────────────────────────────────────────────
     # Screen 1: Initialization Setup Wizard
@@ -351,8 +487,9 @@ class USBKillswitchApp(ctk.CTk):
     def _launch_init_google_auth(self):
         """Open browser for Google login during initialization and auto-populate email."""
         import secrets
+        current_api = get_api_url()
         session_id = f"init_{secrets.token_hex(8)}"
-        auth_url = f"{DEFAULT_API.rstrip('/')}/auth/google?session_id={session_id}"
+        auth_url = f"{current_api.rstrip('/')}/auth/google?session_id={session_id}"
         webbrowser.open(auth_url)
 
         self.init_email_badge.configure(text="⏳ Waiting for Google Sign-In in browser...", text_color=COLORS['warning'])
@@ -362,7 +499,7 @@ class USBKillswitchApp(ctk.CTk):
             start_t = time.time()
             while time.time() - start_t < 180:
                 try:
-                    r = requests.get(f"{DEFAULT_API.rstrip('/')}/api/auth/google/check-session?session_id={session_id}", timeout=5)
+                    r = requests.get(f"{current_api.rstrip('/')}/api/auth/google/check-session?session_id={session_id}", timeout=5)
                     if r.ok:
                         data = r.json()
                         if data.get('authenticated') and data.get('email'):
@@ -376,6 +513,7 @@ class USBKillswitchApp(ctk.CTk):
         threading.Thread(target=poll_google, daemon=True).start()
 
     def _on_google_verified(self, email: str):
+        self._focus_window()
         self.init_email.delete(0, 'end')
         self.init_email.insert(0, email)
         self.init_email_badge.configure(text=f"✅ Verified Google Owner: {email}", text_color=COLORS['success'])
@@ -405,7 +543,7 @@ class USBKillswitchApp(ctk.CTk):
             self.folder_label.configure(text=f"📁  {name}/   ({path})", text_color=COLORS['text'])
 
     def _do_init(self):
-        api_url = DEFAULT_API
+        api_url = get_api_url()
         email   = self.init_email.get().strip()
         label   = self.init_label.get().strip() or 'My USB Drive'
         folder  = self._selected_folder
@@ -480,8 +618,8 @@ class USBKillswitchApp(ctk.CTk):
                     progress_callback=encrypt_cb
                 )
 
-                # Clean up any leftover metadata files so only Zero-Trust.exe and vault.enc exist
-                for loose_file in (CONFIG_FILE, LOCAL_KEY_FILE, LEASE_FILE):
+                # Clean up transient config and raw key files (lease.tok and vault.enc are strictly preserved)
+                for loose_file in (CONFIG_FILE, LOCAL_KEY_FILE):
                     try:
                         if loose_file.exists():
                             loose_file.unlink()
@@ -495,8 +633,14 @@ class USBKillswitchApp(ctk.CTk):
 
                     self.after(0, lambda: self.init_status.configure(
                         text="Securely erasing original files...", text_color=COLORS['warning']))
-                    wiped = ce.secure_wipe_temp(Path(folder), progress_callback=wipe_cb)
-                    logger.info(f"Wiped {wiped} original files from source folder.")
+                    
+                    encrypted_file_list = stats.get('encrypted_files')
+                    wiped = ce.secure_wipe_source_files(
+                        Path(folder),
+                        files_to_wipe=encrypted_file_list,
+                        progress_callback=wipe_cb
+                    )
+                    logger.info(f"Wiped {wiped} original files from source folder (protected .enc/.tok preserved).")
 
                 # Initial auth (stores lease token directly in vault.enc header)
                 lm.authenticate(api_url, drive_id, fp, email, k_local, lease_path=LEASE_FILE, vault_path=VAULT_FILE)
@@ -570,6 +714,22 @@ class USBKillswitchApp(ctk.CTk):
                                          border_color=COLORS['border'], corner_radius=8)
         self.unlock_email.pack(fill="x", pady=(4, 12))
 
+        # Pre-fill email if available from config or lease token
+        default_email = ''
+        if config:
+            default_email = config.get('owner_email') or config.get('user_email', '')
+        if not default_email and config:
+            k_local_peek = load_local_key()
+            if k_local_peek:
+                try:
+                    lease_peek = lm.load_lease_token(LEASE_FILE, k_local_peek, config.get('drive_id', ''), vault_path=VAULT_FILE)
+                    if lease_peek and lease_peek.get('user_email'):
+                        default_email = lease_peek['user_email']
+                except Exception:
+                    pass
+        if default_email:
+            self.unlock_email.insert(0, default_email)
+
         # Fingerprint card
         fp_hash = fp_module.generate_fingerprint()
         self._current_fingerprint = fp_hash
@@ -606,6 +766,15 @@ class USBKillswitchApp(ctk.CTk):
                          font=ctk.CTkFont(size=11),
                          text_color=COLORS['text_dim']).pack(anchor="w", pady=(0, 4))
 
+        # Server Environment Indicator (Production vs Dev)
+        current_server = get_api_url(config)
+        is_dev = is_dev_mode()
+        server_tag = f"Server: 🛠️ Dev ({current_server})" if is_dev else "Server: ☁️ Production (Render)"
+        server_color = COLORS['warning'] if is_dev else COLORS['accent_hover']
+        ctk.CTkLabel(inner, text=server_tag,
+                     font=ctk.CTkFont(size=10, weight="bold"),
+                     text_color=server_color).pack(anchor="w", pady=(0, 4))
+
         k_local = load_local_key()
         if config and k_local:
             try:
@@ -636,7 +805,13 @@ class USBKillswitchApp(ctk.CTk):
                       font=ctk.CTkFont(size=14, weight="bold"),
                       fg_color=COLORS['accent'], hover_color=COLORS['accent_hover'],
                       corner_radius=10,
-                      command=self._do_unlock).pack(fill="x", pady=(0, 8))
+                      command=self._do_unlock).pack(fill="x", pady=(0, 6))
+
+        ctk.CTkButton(btn_frame, text="🌐 Verify & Unlock with Google", height=36,
+                      font=ctk.CTkFont(size=12, weight="bold"),
+                      fg_color="#ffffff", hover_color="#f1f5f9",
+                      text_color="#1f2937", corner_radius=10,
+                      command=self._launch_unlock_google_auth).pack(fill="x", pady=(0, 8))
 
         bottom_row = ctk.CTkFrame(btn_frame, fg_color="transparent")
         bottom_row.pack(fill="x")
@@ -648,6 +823,41 @@ class USBKillswitchApp(ctk.CTk):
                       text_color=COLORS['text_dim'], corner_radius=8,
                       command=self._show_init_screen).pack(side="left")
 
+    def _launch_unlock_google_auth(self):
+        """Open browser for Google login during unlock and automatically focus back and unlock."""
+        import secrets
+        current_api = get_api_url()
+        session_id = f"unlock_{secrets.token_hex(8)}"
+        auth_url = f"{current_api.rstrip('/')}/auth/google?session_id={session_id}"
+        webbrowser.open(auth_url)
+
+        self.unlock_status.configure(text="⏳ Waiting for Google Sign-In in browser...", text_color=COLORS['warning'])
+
+        def poll_google():
+            import requests
+            start_t = time.time()
+            while time.time() - start_t < 180:
+                try:
+                    r = requests.get(f"{current_api.rstrip('/')}/api/auth/google/check-session?session_id={session_id}", timeout=5)
+                    if r.ok:
+                        data = r.json()
+                        if data.get('authenticated') and data.get('email'):
+                            verified_email = data['email']
+                            self.after(0, lambda e=verified_email: self._on_unlock_google_verified(e))
+                            return
+                except Exception:
+                    pass
+                time.sleep(1)
+
+        threading.Thread(target=poll_google, daemon=True).start()
+
+    def _on_unlock_google_verified(self, email: str):
+        self._focus_window()
+        self.unlock_email.delete(0, 'end')
+        self.unlock_email.insert(0, email)
+        self.unlock_status.configure(text=f"✅ Google Verified: {email}. Unlocking...", text_color=COLORS['success'])
+        self.after(200, self._do_unlock)
+
     def _do_unlock(self):
         config = load_config()
         if not config:
@@ -655,6 +865,8 @@ class USBKillswitchApp(ctk.CTk):
             return
 
         email = self.unlock_email.get().strip()
+        if not email and config:
+            email = config.get('owner_email') or config.get('user_email', '')
         if not email:
             self.unlock_status.configure(text="Please enter your email.", text_color=COLORS['danger'])
             return
@@ -671,7 +883,7 @@ class USBKillswitchApp(ctk.CTk):
                     return
 
                 fp       = self._current_fingerprint
-                api_url  = config.get('api_url', DEFAULT_API)
+                api_url  = get_api_url(config)
                 drive_id = config['drive_id']
 
                 result, cks, msg, was_online, request_id = lm.authenticate(
@@ -715,6 +927,8 @@ class USBKillswitchApp(ctk.CTk):
                 self.wait_status.configure(text=txt, text_color=color)
             elif hasattr(self, 'unlock_status') and self.unlock_status.winfo_exists():
                 self.unlock_status.configure(text=txt, text_color=color)
+            elif hasattr(self, 'startup_status') and self.startup_status.winfo_exists():
+                self.startup_status.configure(text=txt, text_color=color)
 
         _set_status(f"Loading vault ({mode})...", COLORS['warning'])
         self.update_idletasks()
@@ -758,6 +972,8 @@ class USBKillswitchApp(ctk.CTk):
             except Exception as e:
                 logger.exception("Manifest load error")
                 self.after(0, lambda: _set_status(f"Decryption failed: {e}", COLORS['danger']))
+                if hasattr(self, 'startup_status') and self.startup_status.winfo_exists():
+                    self.after(1500, self._show_unlock_screen)
 
         threading.Thread(target=do_load, daemon=True).start()
 
@@ -769,7 +985,7 @@ class USBKillswitchApp(ctk.CTk):
         self._clear_window()
         self._poll_stop.clear()
 
-        api_url     = config.get('api_url', DEFAULT_API)
+        api_url     = get_api_url(config)
         approve_url = f"{api_url.rstrip('/')}/approve?req={request_id}"
         google_url  = f"{api_url.rstrip('/')}/auth/google?req={request_id}&email={email}"
 
@@ -967,12 +1183,14 @@ class USBKillswitchApp(ctk.CTk):
         self._show_unlock_screen()
 
     def _on_approval_granted(self, k_local, cloud_key_hex, msg):
+        self._focus_window()
         self.wait_progress.stop()
         self.wait_status.configure(text=f"✅ Access Approved! {msg}", text_color=COLORS['success'])
         self.update_idletasks()
         self.after(500, lambda: self._load_vault_workspace(k_local, cloud_key_hex, "Approved", msg))
 
     def _on_approval_denied(self):
+        self._focus_window()
         self.wait_progress.stop()
         self.wait_status.configure(text="🚫 Access DENIED by drive owner.",
                                    text_color=COLORS['danger'])
@@ -986,7 +1204,9 @@ class USBKillswitchApp(ctk.CTk):
         self._clear_window()
         config = load_config()
         manifest = self.session.get('manifest', {})
-        files = manifest.get('files', [])
+        raw_files = manifest.get('files', [])
+        # Exclude OS system volume metadata (e.g. System Volume Information, $RECYCLE.BIN)
+        files = [f for f in raw_files if not ce.is_system_file(f.get('path', ''))]
 
         # ─── Top Nav Bar ───
         top = ctk.CTkFrame(self, fg_color=COLORS['bg_card'], height=54, corner_radius=0,
@@ -1061,17 +1281,11 @@ class USBKillswitchApp(ctk.CTk):
                       text_color=COLORS['text'], corner_radius=6,
                       command=self._open_selected_item).pack(side="left", padx=(0, 6))
 
-        ctk.CTkButton(btn_bar, text="📂 Open Folder in Explorer", height=28, width=175,
-                      font=ctk.CTkFont(size=11, weight="bold"),
-                      fg_color=COLORS['bg_input'], hover_color=COLORS['border'],
-                      text_color=COLORS['accent_hover'], corner_radius=6,
-                      command=self._open_selected_folder).pack(side="left", padx=(0, 6))
-
-        ctk.CTkButton(btn_bar, text="✏️ Edit All in Explorer", height=28, width=155,
+        ctk.CTkButton(btn_bar, text="✏️ Edit in Explorer", height=28, width=145,
                       font=ctk.CTkFont(size=11, weight="bold"),
                       fg_color=COLORS['accent_purple'], hover_color='#7c3aed',
                       text_color='#ffffff', corner_radius=6,
-                      command=self._open_all_in_explorer).pack(side="left")
+                      command=self._open_in_explorer).pack(side="left")
 
         # Treeview styling
         style = ttk.Style()
@@ -1149,6 +1363,9 @@ class USBKillswitchApp(ctk.CTk):
         nodes = {'': ''}
         self._tree_item_map = {}  # item_id -> {'is_dir': bool, 'path': str, 'entry': dict}
 
+        # Ensure no system volume metadata files are added to tree view
+        file_entries = [e for e in file_entries if not ce.is_system_file(e.get('path', ''))]
+
         for entry in sorted(file_entries, key=lambda e: e['path']):
             path_parts = entry['path'].split('/')
             curr_path = ''
@@ -1212,8 +1429,8 @@ class USBKillswitchApp(ctk.CTk):
             # Selected a single file -> decrypt and open file
             self._open_single_file(meta['entry'])
 
-    def _open_selected_folder(self):
-        """Open the selected directory in Windows Explorer (or root if file/none selected)."""
+    def _open_in_explorer(self):
+        """Open selected folder in Explorer, or extract and open full vault if root/none selected."""
         selected = self.file_tree.selection()
         if not selected:
             self._open_all_in_explorer()
@@ -1234,6 +1451,9 @@ class USBKillswitchApp(ctk.CTk):
                 self._open_directory_path(parent_dir)
             else:
                 self._open_all_in_explorer()
+
+    # Backwards-compatibility alias
+    _open_selected_folder = _open_in_explorer
 
     def _open_single_file(self, entry: dict):
         """Decrypt single file to working directory and launch default application."""
@@ -1337,9 +1557,10 @@ class USBKillswitchApp(ctk.CTk):
         def do_bulk():
             try:
                 k_cloud = ce.hex_to_key_bytes(cloud_key_hex)
+                clean_entries = [f for f in manifest.get('files', []) if not ce.is_system_file(f.get('path', ''))]
                 ce.decrypt_files_to_working_dir(
                     VAULT_FILE, k_local, k_cloud, manifest,
-                    file_entries=manifest.get('files', [])
+                    file_entries=clean_entries
                 )
                 # Copy into unified work dir
                 ce.decrypt_directory_to_working_dir(
@@ -1348,7 +1569,7 @@ class USBKillswitchApp(ctk.CTk):
                 )
 
                 self.session['is_full_extract'] = True
-                for f in manifest.get('files', []):
+                for f in clean_entries:
                     self.session['opened_files'][f['path']] = work_dir / f['path']
 
                 self.after(0, lambda: self._on_bulk_ready(work_dir))
