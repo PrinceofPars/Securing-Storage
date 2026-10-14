@@ -1,21 +1,20 @@
 """
-gui.py — USB Killswitch v2 Modern Desktop GUI Client
-======================================================
-Modern desktop application built with CustomTkinter.
+gui.py — USB Killswitch v2 High-Assurance Desktop GUI Client
+============================================================
+Engineered desktop application built with CustomTkinter.
+Designed for high usability, ergonomic clarity, and robust offline/online security.
 
 Features:
-  - Modern dark glassmorphism aesthetic
-  - Split authentication & approval screen:
-    - Left side: "Click to Show QR Code" for mobile phone camera scanning
-    - Right side: "Continue with Google" for browser-based portal authentication
-  - Live 2s polling that auto-detects owner approvals from phone or web portal
-  - Tail-manifest file workspace with:
-    - Open single file (with full edit & save-back support)
-    - Open any specific directory or whole vault in Windows Explorer
-    - Incremental Lock & Save that detects modified files and updates vault.enc
-    - Secure wiping of all temporary working files on lock/exit
-
-Run:  python gui.py
+  - High-craft, dark-mode-only industrial aesthetic (anti-AI, clean typography)
+  - Split authorization gate:
+      - Left: High-contrast QR code for mobile device scanning
+      - Right: Direct browser portal authentication
+  - Background polling (2s) auto-detecting remote owner decisions
+  - Tail-manifest file workspace:
+      - Single-file decrypt & launch with live modification tracking
+      - Full-directory exploration in Windows Explorer
+      - Incremental Save & Lock updating vault.enc
+      - Cryptographic zeroing / secure wiping of temporary session data
 """
 
 import json
@@ -34,7 +33,7 @@ import tkinter.ttk as ttk
 from typing import Optional, List, Dict
 import webbrowser
 
-# Fix Windows UTF-8 console
+# Fix Windows UTF-8 console output
 if sys.platform == 'win32' and hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -46,7 +45,7 @@ import customtkinter as ctk
 from PIL import Image
 import qrcode
 
-# Local modules
+# Local security modules
 import fingerprint as fp_module
 import crypto_engine as ce
 import lease_manager as lm
@@ -94,22 +93,14 @@ def is_dev_mode() -> bool:
     return False
 
 def get_api_url(config: Optional[dict] = None) -> str:
-    """
-    Return backend API URL.
-    Strictly defaults to production Render URL ('https://securing-storage.onrender.com')
-    unless explicitly running in development mode.
-    """
-    # 1. Explicit custom URL override via USB_API_URL
+    """Return backend API URL with production fallback."""
     custom_url = os.environ.get('USB_API_URL', '').strip()
     if custom_url:
         return custom_url.rstrip('/')
 
-    # 2. Explicit development mode (e.g. USB_ENV=dev)
     if is_dev_mode():
         return DEV_API_URL
 
-    # 3. Default is strictly PROD_API_URL
-    # If drive config contains localhost from previous local dev test, ignore it in production mode.
     if config and config.get('api_url'):
         saved_url = config['api_url'].rstrip('/')
         if 'localhost' in saved_url or '127.0.0.1' in saved_url:
@@ -118,7 +109,7 @@ def get_api_url(config: Optional[dict] = None) -> str:
 
     return PROD_API_URL
 
-DEFAULT_API    = get_api_url()
+DEFAULT_API = get_api_url()
 
 def set_base_dir(new_path: Path):
     global BASE_DIR, CONFIG_FILE, LOCAL_KEY_FILE, VAULT_FILE, LEASE_FILE
@@ -129,37 +120,44 @@ def set_base_dir(new_path: Path):
     LEASE_FILE     = BASE_DIR / 'lease.tok'
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Modern Theme Configuration
+# Visual Design System (Engineered Dark Mode Only)
 # ──────────────────────────────────────────────────────────────────────────────
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
+# Precise, matte, industrial palette — high ergonomic contrast, no candy gradients
 COLORS = {
-    'bg':            '#0a0d14',
-    'bg_card':       '#131722',
-    'bg_card_alt':   '#181d2c',
-    'bg_input':      '#1e2436',
-    'accent':        '#6366f1',
-    'accent_hover':  '#818cf8',
-    'accent_purple': '#8b5cf6',
-    'success':       '#10b981',
-    'danger':        '#f43f5e',
-    'danger_hover':  '#e11d48',
-    'warning':       '#f59e0b',
-    'text':          '#f8fafc',
-    'text_dim':      '#94a3b8',
-    'text_muted':    '#64748b',
-    'border':        '#272e42',
-    'border_focus':  '#4f46e5',
+    'bg':            '#0d1117',  # Deep matte canvas
+    'bg_card':       '#161b22',  # Solid container surface
+    'bg_card_alt':   '#1c2128',  # Elevated secondary panel / QR bed
+    'bg_input':      '#1c2128',  # Input field background
+    'bg_hover':      '#262c36',  # Action hover state
+    'accent':        '#4f46e5',  # Authoritative royal indigo
+    'accent_hover':  '#4338ca',  # Focused/hover indigo
+    'accent_subtle': '#1e2338',  # Tinted accent background
+    'success':       '#3fb950',  # Verified status emerald
+    'success_bg':    '#12261a',  # Emerald tinted badge background
+    'danger':        '#f85149',  # Crimson warning / lock
+    'danger_hover':  '#da3633',  # Danger hover state
+    'danger_bg':     '#2c1516',  # Danger badge background
+    'warning':       '#e3b341',  # Amber caution / pending
+    'warning_bg':    '#2b2210',  # Amber badge background
+    'info':          '#58a6ff',  # Informational blue
+    'text':          '#f0f6fc',  # Primary crisp text
+    'text_dim':      '#8b949e',  # Secondary label text
+    'text_muted':    '#6e7681',  # Tertiary metadata text
+    'border':        '#30363d',  # Standard 1px panel border
+    'border_subtle': '#21262d',  # Hairline interior divider
+    'border_focus':  '#4f46e5',  # Input focus border
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Helpers
+# Storage & Metadata Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
 def load_config() -> Optional[dict]:
-    # Check encapsulated vault header first
+    """Retrieve configuration from encapsulated vault header or loose config.json."""
     if VAULT_FILE.exists():
         try:
             hdr = ce.read_vault_header(VAULT_FILE)
@@ -167,7 +165,6 @@ def load_config() -> Optional[dict]:
                 return hdr['config']
         except Exception:
             pass
-    # Fallback to legacy loose config.json
     if CONFIG_FILE.exists():
         try:
             return json.loads(CONFIG_FILE.read_text(encoding='utf-8'))
@@ -192,7 +189,6 @@ def load_local_key() -> Optional[bytes]:
     return None
 
 def save_config(config: dict):
-    # If vault exists and is v3 encapsulated, update header in-place
     if VAULT_FILE.exists():
         try:
             ce.update_vault_header(VAULT_FILE, config=config)
@@ -201,8 +197,8 @@ def save_config(config: dict):
             pass
     CONFIG_FILE.write_text(json.dumps(config, indent=2), encoding='utf-8')
 
-def generate_qr_ctk_image(data_str: str, size: int = 170) -> ctk.CTkImage:
-    """Generate a high-contrast CTkImage containing a QR code."""
+def generate_qr_ctk_image(data_str: str, size: int = 160) -> ctk.CTkImage:
+    """Generate high-contrast QR code embedded on dark matte container."""
     qr = qrcode.QRCode(
         version=1,
         error_correction=qrcode.constants.ERROR_CORRECT_M,
@@ -211,36 +207,35 @@ def generate_qr_ctk_image(data_str: str, size: int = 170) -> ctk.CTkImage:
     )
     qr.add_data(data_str)
     qr.make(fit=True)
-    qr_img = qr.make_image(fill_color="white", back_color="#181d2c")
-    # Extract underlying PIL.Image.Image if wrapped by PilImage
+    qr_img = qr.make_image(fill_color="white", back_color=COLORS['bg_card_alt'])
     pil_img = qr_img.get_image() if hasattr(qr_img, 'get_image') else qr_img
     pil_img = pil_img.convert('RGB')
     return ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(size, size))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Main Desktop Application
+# Main Desktop Application Window
 # ══════════════════════════════════════════════════════════════════════════════
 
 class USBKillswitchApp(ctk.CTk):
-    """Modern Desktop GUI client for USB Killswitch v2."""
+    """Engineered desktop client for hardware-bound cryptographic storage."""
 
     def __init__(self):
         super().__init__()
 
-        self.title("Zero-Trust Storage Protection")
-        self.geometry("880x700")
-        self.minsize(800, 620)
+        self.title("USB Killswitch — Storage Protection")
+        self.geometry("900x700")
+        self.minsize(820, 640)
         self.configure(fg_color=COLORS['bg'])
 
-        # Session state
+        # Active session context
         self.session = {
             'unlocked':        False,
             'manifest':        None,
             'k_local':         None,
             'cloud_key_share': None,
             'working_dir':     None,
-            'opened_files':    {},   # rel_path -> local Path
+            'opened_files':    {},
             'is_full_extract': False,
             'unlock_time':     None,
             'request_id':      None,
@@ -248,8 +243,9 @@ class USBKillswitchApp(ctk.CTk):
         self._poll_thread = None
         self._poll_stop   = threading.Event()
         self._timer_id    = None
+        self._current_fingerprint = fp_module.generate_fingerprint()
 
-        # Route initial screen: check if vault exists and if an authorized offline lease is valid
+        # Route initial view
         v_exists = VAULT_FILE.exists()
         hdr = None
         if v_exists:
@@ -269,37 +265,36 @@ class USBKillswitchApp(ctk.CTk):
         else:
             self._show_init_screen()
 
-        # Handle window close
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    def _show_splash_screen(self, message: str = "Authorizing hardware identity..."):
+    def _show_splash_screen(self, message: str = "Verifying host hardware binding..."):
         self._clear_window()
         frame = ctk.CTkFrame(self, fg_color="transparent")
         frame.pack(fill="both", expand=True)
 
-        center = ctk.CTkFrame(frame, fg_color=COLORS['bg_card'], corner_radius=16,
+        center = ctk.CTkFrame(frame, fg_color=COLORS['bg_card'], corner_radius=10,
                              border_width=1, border_color=COLORS['border'])
         center.place(relx=0.5, rely=0.5, anchor="center")
 
-        ctk.CTkLabel(center, text="🔒 SECURE VAULT ACCESS",
-                     font=ctk.CTkFont(size=12, weight="bold"),
-                     text_color=COLORS['accent']).pack(padx=60, pady=(32, 6))
+        ctk.CTkLabel(center, text="HARDWARE VERIFICATION",
+                     font=ctk.CTkFont(family="Consolas", size=10, weight="bold"),
+                     text_color=COLORS['text_dim']).pack(padx=50, pady=(28, 4))
 
         config = load_config()
-        label = config.get('label', 'USB Storage Vault') if config else 'USB Storage Vault'
+        label = config.get('label', 'Storage Vault') if config else 'Storage Vault'
         ctk.CTkLabel(center, text=label,
-                     font=ctk.CTkFont(size=22, weight="bold"),
-                     text_color=COLORS['text']).pack(padx=60, pady=(0, 16))
+                     font=ctk.CTkFont(size=20, weight="bold"),
+                     text_color=COLORS['text']).pack(padx=50, pady=(0, 14))
 
         self.startup_status = ctk.CTkLabel(center, text=message,
-                                           font=ctk.CTkFont(size=13),
+                                           font=ctk.CTkFont(size=12),
                                            text_color=COLORS['warning'])
-        self.startup_status.pack(padx=60, pady=(0, 32))
+        self.startup_status.pack(padx=50, pady=(0, 28))
 
     def _focus_window(self):
-        """Bring the application window to the foreground and focus it."""
+        """Bring window to foreground upon approval or critical state transition."""
         try:
-            self.deiconify()  # restore if minimized
+            self.deiconify()
             self.lift()
             self.attributes('-topmost', True)
             self.after(200, lambda: self.attributes('-topmost', False))
@@ -309,22 +304,18 @@ class USBKillswitchApp(ctk.CTk):
                 import ctypes
                 hwnd = self.winfo_id()
                 try:
-                    target_hwnd = ctypes.windll.user32.FindWindowW(None, "Zero-Trust Storage Protection")
+                    target_hwnd = ctypes.windll.user32.FindWindowW(None, "USB Killswitch — Storage Protection")
                     if target_hwnd:
                         hwnd = target_hwnd
                 except Exception:
                     pass
-                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE = 9
+                ctypes.windll.user32.ShowWindow(hwnd, 9)
                 ctypes.windll.user32.SetForegroundWindow(hwnd)
         except Exception as e:
-            logger.debug(f"Could not force foreground window: {e}")
+            logger.debug(f"Focus window exception: {e}")
 
     def _try_startup_auto_unlock(self) -> bool:
-        """
-        Check if an active offline lease token exists for this host system.
-        If valid and bound to the current hardware fingerprint, auto-unlock and
-        transition directly to the workspace file tree.
-        """
+        """Check for active offline lease token matching this host's hardware fingerprint."""
         try:
             config = load_config()
             k_local = load_local_key()
@@ -345,26 +336,26 @@ class USBKillswitchApp(ctk.CTk):
             cks = lease.get('cloud_key_share')
 
             if not cks or now >= expires_at:
-                logger.info("Startup check: lease token missing key share or expired.")
+                logger.info("Startup check: lease token absent or expired.")
                 return False
 
             if fp_hash.lower() != lease_fp.lower():
-                logger.info("Startup check: lease hardware fingerprint does not match current host machine.")
+                logger.info("Startup check: hardware fingerprint mismatch.")
                 return False
 
-            logger.info("Valid offline lease detected for authorized host hardware. Directly opening vault workspace...")
+            logger.info("Valid offline lease token active for this host machine. Bypassing login.")
             self._show_splash_screen("Authorizing hardware identity...")
             self.after(50, lambda: self._load_vault_workspace(
-                k_local, cks, "Offline Lease (Auto)", "Authorized offline session active"
+                k_local, cks, "Offline Lease", "Authorized offline session active"
             ))
             return True
 
         except Exception as e:
-            logger.warning(f"Startup auto-unlock check encountered error: {e}")
+            logger.warning(f"Startup auto-unlock error: {e}")
             return False
 
     # ──────────────────────────────────────────────────────────────────────
-    # Screen 1: Initialization Setup Wizard
+    # View 1: Vault Initialization Setup
     # ──────────────────────────────────────────────────────────────────────
 
     def _show_init_screen(self):
@@ -372,127 +363,137 @@ class USBKillswitchApp(ctk.CTk):
         self._selected_folder = None
 
         frame = ctk.CTkFrame(self, fg_color="transparent")
-        frame.pack(fill="both", expand=True, padx=40, pady=24)
+        frame.pack(fill="both", expand=True, padx=48, pady=28)
 
-        # Header Badge & Title
+        # Header Section
         header_box = ctk.CTkFrame(frame, fg_color="transparent")
-        header_box.pack(pady=(0, 16))
+        header_box.pack(pady=(0, 16), anchor="w")
 
-        ctk.CTkLabel(header_box, text="🔐 ZERO-TRUST STORAGE SETUP",
-                     font=ctk.CTkFont(size=11, weight="bold"),
-                     text_color=COLORS['accent']).pack()
-        ctk.CTkLabel(header_box, text="Initialize Encrypted Vault",
-                     font=ctk.CTkFont(size=24, weight="bold"),
-                     text_color=COLORS['text']).pack(pady=(2, 2))
-        ctk.CTkLabel(header_box, text="Configure your USB drive with split-key tail-manifest encryption",
-                     font=ctk.CTkFont(size=13),
-                     text_color=COLORS['text_dim']).pack()
+        tag_row = ctk.CTkFrame(header_box, fg_color="transparent")
+        tag_row.pack(anchor="w")
+        ctk.CTkLabel(tag_row, text="SETUP WIZARD",
+                     font=ctk.CTkFont(family="Consolas", size=10, weight="bold"),
+                     text_color=COLORS['accent']).pack(side="left")
 
-        # Form Card
-        card = ctk.CTkFrame(frame, fg_color=COLORS['bg_card'], corner_radius=16,
+        ctk.CTkLabel(header_box, text="Vault Initialization",
+                     font=ctk.CTkFont(size=22, weight="bold"),
+                     text_color=COLORS['text']).pack(anchor="w", pady=(2, 2))
+        ctk.CTkLabel(header_box, text="Create a split-key encrypted vault bound to hardware identity",
+                     font=ctk.CTkFont(size=12),
+                     text_color=COLORS['text_dim']).pack(anchor="w")
+
+        # Main Configuration Card
+        card = ctk.CTkFrame(frame, fg_color=COLORS['bg_card'], corner_radius=10,
                             border_width=1, border_color=COLORS['border'])
         card.pack(fill="x", pady=(0, 14))
 
         inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(fill="x", padx=28, pady=20)
+        inner.pack(fill="x", padx=24, pady=20)
 
-        # Google Account Connection
-        ctk.CTkLabel(inner, text="Drive Owner Identity",
+        # 1. Owner Identity
+        ctk.CTkLabel(inner, text="Vault Owner Identity",
                      font=ctk.CTkFont(size=12, weight="bold"),
-                     text_color=COLORS['text_dim']).pack(anchor="w")
+                     text_color=COLORS['text']).pack(anchor="w")
 
-        # Google Sign-In Action Button
+        auth_subtext = ctk.CTkLabel(inner,
+                                    text="Authenticate with Google to verify owner identity, or enter your email manually below:",
+                                    font=ctk.CTkFont(size=11),
+                                    text_color=COLORS['text_muted'])
+        auth_subtext.pack(anchor="w", pady=(2, 6))
+
+        # Google Sign-In Action
         self.init_google_btn = ctk.CTkButton(
-            inner, text="  Continue with Google", height=40,
-            font=ctk.CTkFont(size=13, weight="bold"),
-            fg_color="#ffffff", hover_color="#f1f5f9",
-            text_color="#1f2937", corner_radius=10,
+            inner, text="Authenticate via Google Account", height=36,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COLORS['bg_input'], hover_color=COLORS['bg_hover'],
+            border_width=1, border_color=COLORS['border'],
+            text_color=COLORS['text'], corner_radius=6,
             command=self._launch_init_google_auth
         )
-        self.init_google_btn.pack(fill="x", pady=(4, 8))
+        self.init_google_btn.pack(fill="x", pady=(0, 8))
 
-        # Verified Email Badge / Manual Entry
-        self.init_email_badge = ctk.CTkLabel(inner, text="Click 'Continue with Google' to verify owner identity",
-                                             font=ctk.CTkFont(size=11),
+        self.init_email_badge = ctk.CTkLabel(inner, text="Status: Awaiting owner verification",
+                                             font=ctk.CTkFont(family="Consolas", size=10),
                                              text_color=COLORS['text_muted'])
         self.init_email_badge.pack(anchor="w", pady=(0, 6))
 
-        self.init_email = ctk.CTkEntry(inner, placeholder_text="Or enter email manually (e.g. owner@gmail.com)",
-                                       height=32, fg_color=COLORS['bg_input'],
-                                       border_color=COLORS['border'], corner_radius=8,
-                                       font=ctk.CTkFont(size=11))
-        self.init_email.pack(fill="x", pady=(0, 12))
-
-        # Drive Label
-        ctk.CTkLabel(inner, text="Drive Label (Optional)",
-                     font=ctk.CTkFont(size=12, weight="bold"),
-                     text_color=COLORS['text_dim']).pack(anchor="w")
-        self.init_label = ctk.CTkEntry(inner, placeholder_text="e.g. Encrypted Work Drive",
+        self.init_email = ctk.CTkEntry(inner, placeholder_text="Owner email address (e.g. owner@domain.com)",
                                        height=36, fg_color=COLORS['bg_input'],
-                                       border_color=COLORS['border'], corner_radius=8)
-        self.init_label.pack(fill="x", pady=(4, 12))
+                                       border_color=COLORS['border'], corner_radius=6,
+                                       font=ctk.CTkFont(size=12))
+        self.init_email.pack(fill="x", pady=(0, 14))
+        self.init_email.bind("<Return>", lambda e: self.init_label.focus_set())
 
-        # Folder selection
-        folder_row = ctk.CTkFrame(inner, fg_color="transparent")
-        folder_row.pack(fill="x", pady=(0, 6))
-
-        ctk.CTkLabel(folder_row, text="Source Folder to Encrypt",
+        # 2. Vault Label
+        ctk.CTkLabel(inner, text="Storage Unit Label",
                      font=ctk.CTkFont(size=12, weight="bold"),
-                     text_color=COLORS['text_dim']).pack(anchor="w")
+                     text_color=COLORS['text']).pack(anchor="w")
+        self.init_label = ctk.CTkEntry(inner, placeholder_text="e.g. Primary Work Vault",
+                                       height=36, fg_color=COLORS['bg_input'],
+                                       border_color=COLORS['border'], corner_radius=6)
+        self.init_label.pack(fill="x", pady=(4, 14))
 
-        btn_row = ctk.CTkFrame(folder_row, fg_color="transparent")
-        btn_row.pack(fill="x", pady=(4, 0))
+        # 3. Source Directory
+        ctk.CTkLabel(inner, text="Source Folder to Encrypt",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=COLORS['text']).pack(anchor="w")
 
-        self.folder_label = ctk.CTkLabel(btn_row, text="No folder selected",
+        dir_picker_frame = ctk.CTkFrame(inner, fg_color=COLORS['bg_input'], corner_radius=6,
+                                        border_width=1, border_color=COLORS['border'])
+        dir_picker_frame.pack(fill="x", pady=(4, 8))
+
+        self.folder_label = ctk.CTkLabel(dir_picker_frame, text="No folder selected",
                                          text_color=COLORS['text_muted'],
                                          font=ctk.CTkFont(size=12))
-        self.folder_label.pack(side="left", fill="x", expand=True, anchor="w")
+        self.folder_label.pack(side="left", padx=12, pady=8, fill="x", expand=True, anchor="w")
 
-        ctk.CTkButton(btn_row, text="Browse...", width=100, height=32,
-                      fg_color=COLORS['bg_input'], hover_color=COLORS['border'],
-                      text_color=COLORS['text'], corner_radius=8,
-                      command=self._browse_folder).pack(side="right")
+        ctk.CTkButton(dir_picker_frame, text="Browse...", width=90, height=28,
+                      fg_color=COLORS['bg_card'], hover_color=COLORS['bg_hover'],
+                      border_width=1, border_color=COLORS['border'],
+                      text_color=COLORS['text'], corner_radius=4,
+                      command=self._browse_folder).pack(side="right", padx=6, pady=4)
 
-        # Wipe checkbox
+        # Secure Erase Option
         self.wipe_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(folder_row, text="Securely wipe original plaintext folder after encryption",
+        ctk.CTkCheckBox(inner, text="Erase original plaintext files from drive after encryption completes",
                         variable=self.wipe_var,
-                        font=ctk.CTkFont(size=11), text_color=COLORS['danger'],
-                        hover_color=COLORS['danger'], border_color=COLORS['border']).pack(anchor="w", pady=(8, 0))
+                        font=ctk.CTkFont(size=11), text_color=COLORS['text_dim'],
+                        hover_color=COLORS['danger'], border_color=COLORS['border'],
+                        corner_radius=4).pack(anchor="w", pady=(4, 0))
 
-        # Status & Progress
+        # Status & Progress Area
         self.init_status = ctk.CTkLabel(frame, text="", text_color=COLORS['text_dim'],
                                         font=ctk.CTkFont(size=12))
         self.init_status.pack(pady=(0, 4))
 
-        self.init_progress = ctk.CTkProgressBar(frame, width=440, height=6,
+        self.init_progress = ctk.CTkProgressBar(frame, height=4,
                                                  progress_color=COLORS['accent'],
                                                  fg_color=COLORS['bg_input'])
-        self.init_progress.pack(pady=(0, 10))
+        self.init_progress.pack(fill="x", pady=(0, 10))
         self.init_progress.set(0)
 
-        # Action Buttons
-        ctk.CTkButton(frame, text="🚀 Initialize & Encrypt Drive", height=42,
-                      font=ctk.CTkFont(size=14, weight="bold"),
+        # Primary Submission Buttons
+        ctk.CTkButton(frame, text="Initialize Encrypted Vault", height=40,
+                      font=ctk.CTkFont(size=13, weight="bold"),
                       fg_color=COLORS['accent'], hover_color=COLORS['accent_hover'],
-                      corner_radius=10,
+                      corner_radius=6,
                       command=self._do_init).pack(fill="x")
 
-        ctk.CTkButton(frame, text="Open Existing Vault Folder...", height=30,
+        ctk.CTkButton(frame, text="Select Existing Vault Directory...", height=30,
                       fg_color="transparent", border_width=1,
                       border_color=COLORS['border'], hover_color=COLORS['bg_card'],
-                      text_color=COLORS['text_dim'], corner_radius=8,
-                      command=self._open_existing_vault).pack(pady=(10, 0))
+                      text_color=COLORS['text_dim'], corner_radius=6,
+                      command=self._open_existing_vault).pack(pady=(8, 0))
 
     def _launch_init_google_auth(self):
-        """Open browser for Google login during initialization and auto-populate email."""
+        """Open web browser for Google authentication and listen for session result."""
         import secrets
         current_api = get_api_url()
         session_id = f"init_{secrets.token_hex(8)}"
         auth_url = f"{current_api.rstrip('/')}/auth/google?session_id={session_id}"
         webbrowser.open(auth_url)
 
-        self.init_email_badge.configure(text="⏳ Waiting for Google Sign-In in browser...", text_color=COLORS['warning'])
+        self.init_email_badge.configure(text="Status: Waiting for browser authentication...", text_color=COLORS['warning'])
 
         def poll_google():
             import requests
@@ -516,11 +517,11 @@ class USBKillswitchApp(ctk.CTk):
         self._focus_window()
         self.init_email.delete(0, 'end')
         self.init_email.insert(0, email)
-        self.init_email_badge.configure(text=f"✅ Verified Google Owner: {email}", text_color=COLORS['success'])
-        self.init_google_btn.configure(text=f"  Signed In as {email}", fg_color="#e2e8f0")
+        self.init_email_badge.configure(text=f"Status: Verified as {email}", text_color=COLORS['success'])
+        self.init_google_btn.configure(text=f"Authenticated as {email}", fg_color=COLORS['bg_hover'])
 
     def _open_existing_vault(self):
-        path = filedialog.askdirectory(title="Select directory containing vault.enc")
+        path = filedialog.askdirectory(title="Select folder containing vault.enc")
         if path:
             set_base_dir(Path(path))
             hdr = None
@@ -532,33 +533,30 @@ class USBKillswitchApp(ctk.CTk):
             if (hdr and hdr.get('config') and hdr.get('k_local')) or (load_config() and load_local_key() and VAULT_FILE.exists()):
                 self._show_unlock_screen()
             else:
-                messagebox.showerror("Error", f"No valid vault found in {path}")
+                messagebox.showerror("Vault Error", f"No valid cryptographic vault found in {path}")
                 set_base_dir(Path(__file__).parent.resolve())
 
     def _browse_folder(self):
-        path = filedialog.askdirectory(title="Select folder to encrypt into vault")
+        path = filedialog.askdirectory(title="Select directory to pack into vault")
         if path:
             self._selected_folder = path
             name = Path(path).name
-            self.folder_label.configure(text=f"📁  {name}/   ({path})", text_color=COLORS['text'])
+            self.folder_label.configure(text=f"{name}/ ({path})", text_color=COLORS['text'])
 
     def _do_init(self):
         api_url = get_api_url()
         email   = self.init_email.get().strip()
-        label   = self.init_label.get().strip() or 'My USB Drive'
+        label   = self.init_label.get().strip() or 'Secure Storage Vault'
         folder  = self._selected_folder
 
         if not email:
-            self.init_status.configure(text="Please enter your Owner Email address.",
-                                       text_color=COLORS['danger'])
+            self.init_status.configure(text="Owner email address is required.", text_color=COLORS['danger'])
             return
         if not folder or not Path(folder).is_dir():
-            self.init_status.configure(text="Please select a valid folder to encrypt.",
-                                       text_color=COLORS['danger'])
+            self.init_status.configure(text="Please select a valid source directory to encrypt.", text_color=COLORS['danger'])
             return
 
-        self.init_status.configure(text="Registering drive on server...",
-                                   text_color=COLORS['warning'])
+        self.init_status.configure(text="Registering storage unit with server...", text_color=COLORS['warning'])
         self.update_idletasks()
 
         target_dir = Path(folder).parent
@@ -576,12 +574,12 @@ class USBKillswitchApp(ctk.CTk):
                         'owner_email': email,
                         'hardware_fingerprint': fp
                     },
-                    timeout=10
+                    timeout=12
                 )
                 if r.status_code not in (200, 201):
                     err_msg = r.json().get('error', r.text[:80]) if r.headers.get('content-type', '').startswith('application/json') else r.text[:80]
                     self.after(0, lambda: self.init_status.configure(
-                        text=f"Registration error: {err_msg}",
+                        text=f"Registration failed: {err_msg}",
                         text_color=COLORS['danger']))
                     return
 
@@ -589,10 +587,8 @@ class USBKillswitchApp(ctk.CTk):
                 drive_id      = data['drive_id']
                 cloud_key_hex = data['cloud_key_share']
 
-                # Generate local key share (stored directly inside vault.enc header)
                 k_local = ce.generate_local_key()
 
-                # Build config
                 config = {
                     'drive_id':    drive_id,
                     'label':       label,
@@ -603,7 +599,7 @@ class USBKillswitchApp(ctk.CTk):
                 }
 
                 self.after(0, lambda: self.init_status.configure(
-                    text="Encrypting folder into encapsulated vault...",
+                    text="Encrypting files into encapsulated vault container...",
                     text_color=COLORS['warning']))
 
                 def encrypt_cb(current, total, filename):
@@ -618,7 +614,6 @@ class USBKillswitchApp(ctk.CTk):
                     progress_callback=encrypt_cb
                 )
 
-                # Clean up transient config and raw key files (lease.tok and vault.enc are strictly preserved)
                 for loose_file in (CONFIG_FILE, LOCAL_KEY_FILE):
                     try:
                         if loose_file.exists():
@@ -629,29 +624,29 @@ class USBKillswitchApp(ctk.CTk):
                 if self.wipe_var.get():
                     def wipe_cb(current, total, filename):
                         self.after(0, lambda: self.init_status.configure(
-                            text=f"Wiping files [{current}/{total}]...", text_color=COLORS['warning']))
+                            text=f"Zeroing source files [{current}/{total}]...", text_color=COLORS['warning']))
 
                     self.after(0, lambda: self.init_status.configure(
-                        text="Securely erasing original files...", text_color=COLORS['warning']))
-                    
+                        text="Securely erasing plaintext files...", text_color=COLORS['warning']))
+
                     encrypted_file_list = stats.get('encrypted_files')
                     wiped = ce.secure_wipe_source_files(
                         Path(folder),
                         files_to_wipe=encrypted_file_list,
                         progress_callback=wipe_cb
                     )
-                    logger.info(f"Wiped {wiped} original files from source folder (protected .enc/.tok preserved).")
+                    logger.info(f"Securely erased {wiped} source files from disk.")
 
-                # Initial auth (stores lease token directly in vault.enc header)
+                # Initial auth (binds hardware lease)
                 lm.authenticate(api_url, drive_id, fp, email, k_local, lease_path=LEASE_FILE, vault_path=VAULT_FILE)
 
                 files_count = stats['files_encrypted']
                 self.after(0, lambda: self._init_complete(files_count, drive_id))
 
             except Exception as e:
-                logger.exception("Init error")
+                logger.exception("Initialization failure")
                 self.after(0, lambda: self.init_status.configure(
-                    text=f"Error: {e}", text_color=COLORS['danger']))
+                    text=f"Initialization error: {e}", text_color=COLORS['danger']))
 
         threading.Thread(target=do_work, daemon=True).start()
 
@@ -659,9 +654,9 @@ class USBKillswitchApp(ctk.CTk):
         if hasattr(self, 'init_progress'):
             self.init_progress.set(1.0)
         self.init_status.configure(
-            text=f"Drive {drive_id[:8]}... initialized! {files_count} files encrypted.",
+            text=f"Vault initialized successfully. Encrypted {files_count} files.",
             text_color=COLORS['success'])
-        self.after(1400, self._show_unlock_screen)
+        self.after(1200, self._show_unlock_screen)
 
     def _update_encrypt_progress(self, progress, current, total, filename):
         try:
@@ -676,7 +671,7 @@ class USBKillswitchApp(ctk.CTk):
             pass
 
     # ──────────────────────────────────────────────────────────────────────
-    # Screen 2: Modern Unlock / Login Screen
+    # View 2: Vault Authentication Screen
     # ──────────────────────────────────────────────────────────────────────
 
     def _show_unlock_screen(self):
@@ -684,37 +679,44 @@ class USBKillswitchApp(ctk.CTk):
         config = load_config()
 
         frame = ctk.CTkFrame(self, fg_color="transparent")
-        frame.pack(fill="both", expand=True, padx=40, pady=24)
+        frame.pack(fill="both", expand=True, padx=48, pady=28)
 
-        # Title
-        drive_label = config.get('label', 'USB Storage Vault') if config else 'USB Storage Vault'
-        ctk.CTkLabel(frame, text="🔒 SECURE VAULT ACCESS",
-                     font=ctk.CTkFont(size=11, weight="bold"),
-                     text_color=COLORS['accent']).pack()
-        ctk.CTkLabel(frame, text=drive_label,
-                     font=ctk.CTkFont(size=24, weight="bold"),
-                     text_color=COLORS['text']).pack(pady=(2, 2))
-        ctk.CTkLabel(frame, text="Authenticate hardware identity or request remote access",
-                     font=ctk.CTkFont(size=13),
-                     text_color=COLORS['text_dim']).pack(pady=(0, 16))
+        # Header Section
+        header_box = ctk.CTkFrame(frame, fg_color="transparent")
+        header_box.pack(pady=(0, 16), anchor="w")
 
-        # Main Card
-        card = ctk.CTkFrame(frame, fg_color=COLORS['bg_card'], corner_radius=16,
+        ctk.CTkLabel(header_box, text="VAULT ACCESS GATE",
+                     font=ctk.CTkFont(family="Consolas", size=10, weight="bold"),
+                     text_color=COLORS['accent']).pack(anchor="w")
+
+        drive_label = config.get('label', 'Storage Vault') if config else 'Storage Vault'
+        ctk.CTkLabel(header_box, text=drive_label,
+                     font=ctk.CTkFont(size=22, weight="bold"),
+                     text_color=COLORS['text']).pack(anchor="w", pady=(2, 2))
+        ctk.CTkLabel(header_box, text="Authenticate host identity or request out-of-band authorization",
+                     font=ctk.CTkFont(size=12),
+                     text_color=COLORS['text_dim']).pack(anchor="w")
+
+        # Main Authentication Panel
+        card = ctk.CTkFrame(frame, fg_color=COLORS['bg_card'], corner_radius=10,
                             border_width=1, border_color=COLORS['border'])
         card.pack(fill="x", pady=(0, 14))
+
         inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(fill="x", padx=28, pady=20)
+        inner.pack(fill="x", padx=24, pady=20)
 
-        # Email
-        ctk.CTkLabel(inner, text="User / Owner Email",
+        # Email Input
+        ctk.CTkLabel(inner, text="User Identity (Email)",
                      font=ctk.CTkFont(size=12, weight="bold"),
-                     text_color=COLORS['text_dim']).pack(anchor="w")
-        self.unlock_email = ctk.CTkEntry(inner, placeholder_text="Enter your email address",
-                                         height=38, fg_color=COLORS['bg_input'],
-                                         border_color=COLORS['border'], corner_radius=8)
-        self.unlock_email.pack(fill="x", pady=(4, 12))
+                     text_color=COLORS['text']).pack(anchor="w")
 
-        # Pre-fill email if available from config or lease token
+        self.unlock_email = ctk.CTkEntry(inner, placeholder_text="user@domain.com",
+                                         height=36, fg_color=COLORS['bg_input'],
+                                         border_color=COLORS['border'], corner_radius=6,
+                                         font=ctk.CTkFont(size=12))
+        self.unlock_email.pack(fill="x", pady=(4, 14))
+        self.unlock_email.bind("<Return>", lambda e: self._do_unlock())
+
         default_email = ''
         if config:
             default_email = config.get('owner_email') or config.get('user_email', '')
@@ -730,160 +732,134 @@ class USBKillswitchApp(ctk.CTk):
         if default_email:
             self.unlock_email.insert(0, default_email)
 
-        # Fingerprint card
+        # Host Hardware Identity Inspection Card
         fp_hash = fp_module.generate_fingerprint()
         self._current_fingerprint = fp_hash
-
-        fp_frame = ctk.CTkFrame(inner, fg_color=COLORS['bg_input'], corner_radius=8,
-                                border_width=1, border_color=COLORS['border'])
-        fp_frame.pack(fill="x", pady=(0, 12))
-        fp_inner = ctk.CTkFrame(fp_frame, fg_color="transparent")
-        fp_inner.pack(fill="x", padx=14, pady=10)
-
-        ctk.CTkLabel(fp_inner, text="Host Hardware Fingerprint",
-                     font=ctk.CTkFont(size=11, weight="bold"),
-                     text_color=COLORS['text_muted']).pack(anchor="w")
-        ctk.CTkLabel(fp_inner, text=f"{fp_hash[:32]}",
-                     font=ctk.CTkFont(family="Consolas", size=11),
-                     text_color=COLORS['accent']).pack(anchor="w")
-        ctk.CTkLabel(fp_inner, text=f"{fp_hash[32:]}",
-                     font=ctk.CTkFont(family="Consolas", size=11),
-                     text_color=COLORS['accent']).pack(anchor="w")
-
         comps = fp_module.get_hardware_components()
-        ctk.CTkLabel(fp_inner,
-                     text=f"Host: {comps.get('platform','')} {comps.get('os_arch','')} | {comps.get('hostname','')}",
-                     font=ctk.CTkFont(size=10),
-                     text_color=COLORS['text_muted']).pack(anchor="w", pady=(4, 0))
 
-        # Vault & Lease status
+        fp_panel = ctk.CTkFrame(inner, fg_color=COLORS['bg_input'], corner_radius=6,
+                                border_width=1, border_color=COLORS['border_subtle'])
+        fp_panel.pack(fill="x", pady=(0, 14))
+
+        fp_inner = ctk.CTkFrame(fp_panel, fg_color="transparent")
+        fp_inner.pack(fill="x", padx=14, pady=12)
+
+        fp_head = ctk.CTkFrame(fp_inner, fg_color="transparent")
+        fp_head.pack(fill="x")
+        ctk.CTkLabel(fp_head, text="HOST HARDWARE FINGERPRINT",
+                     font=ctk.CTkFont(family="Consolas", size=10, weight="bold"),
+                     text_color=COLORS['text_dim']).pack(side="left")
+
+        # Copy Hash Button
+        def copy_fp():
+            self.clipboard_clear()
+            self.clipboard_append(fp_hash)
+            self.unlock_status.configure(text="Hardware fingerprint copied to clipboard.", text_color=COLORS['text_dim'])
+
+        ctk.CTkButton(fp_head, text="Copy", width=48, height=20,
+                      font=ctk.CTkFont(size=10),
+                      fg_color=COLORS['bg_card'], hover_color=COLORS['bg_hover'],
+                      border_width=1, border_color=COLORS['border'],
+                      text_color=COLORS['text_dim'], corner_radius=3,
+                      command=copy_fp).pack(side="right")
+
+        formatted_fp = f"{fp_hash[:16]}  {fp_hash[16:32]}  {fp_hash[32:48]}  {fp_hash[48:]}"
+        ctk.CTkLabel(fp_inner, text=formatted_fp,
+                     font=ctk.CTkFont(family="Consolas", size=11),
+                     text_color=COLORS['info']).pack(anchor="w", pady=(4, 2))
+
+        sys_spec = f"Host: {comps.get('platform','')} {comps.get('os_arch','')} | Node: {comps.get('hostname','')}"
+        ctk.CTkLabel(fp_inner, text=sys_spec,
+                     font=ctk.CTkFont(size=11),
+                     text_color=COLORS['text_muted']).pack(anchor="w")
+
+        # Container & Lease Verification State
         meta = ce.inspect_vault_header(VAULT_FILE)
-        if meta and meta.get('valid'):
-            v_size_mb = meta.get('vault_size', 0) / (1024 * 1024)
-            enc_tag = " (Encapsulated Header)" if meta.get('encapsulated') else ""
-            vault_info = f"Vault v{meta.get('version', 3)} format{enc_tag} ({v_size_mb:.2f} MB)"
-            ctk.CTkLabel(inner, text=vault_info,
-                         font=ctk.CTkFont(size=11),
-                         text_color=COLORS['text_dim']).pack(anchor="w", pady=(0, 4))
+        v_size_mb = (meta.get('vault_size', 0) / (1024 * 1024)) if (meta and meta.get('valid')) else 0
+        container_spec = f"Encapsulated Container: {v_size_mb:.2f} MB" if meta and meta.get('valid') else "Container: Ready"
 
-        # Server Environment Indicator (Production vs Dev)
-        current_server = get_api_url(config)
-        is_dev = is_dev_mode()
-        server_tag = f"Server: 🛠️ Dev ({current_server})" if is_dev else "Server: ☁️ Production (Render)"
-        server_color = COLORS['warning'] if is_dev else COLORS['accent_hover']
-        ctk.CTkLabel(inner, text=server_tag,
-                     font=ctk.CTkFont(size=10, weight="bold"),
-                     text_color=server_color).pack(anchor="w", pady=(0, 4))
+        status_bar = ctk.CTkFrame(inner, fg_color="transparent")
+        status_bar.pack(fill="x", pady=(0, 2))
 
+        ctk.CTkLabel(status_bar, text=container_spec,
+                     font=ctk.CTkFont(size=11),
+                     text_color=COLORS['text_dim']).pack(side="left")
+
+        # Lease Status Tag
         k_local = load_local_key()
         if config and k_local:
             try:
                 info = lm.get_lease_info(LEASE_FILE, k_local, config.get('drive_id', ''), vault_path=VAULT_FILE)
                 if info and not info['is_expired']:
-                    lease_text = f"Offline lease active: {info['days_left']}d {info['hours_left']}h remaining"
-                    ctk.CTkLabel(inner, text=lease_text,
-                                 font=ctk.CTkFont(size=11),
-                                 text_color=COLORS['success']).pack(anchor="w", pady=(0, 4))
+                    lease_str = f"Offline Lease: {info['days_left']}d {info['hours_left']}h remaining"
+                    ctk.CTkLabel(status_bar, text=lease_str,
+                                 font=ctk.CTkFont(size=11, weight="bold"),
+                                 text_color=COLORS['success']).pack(side="right")
                 elif info and info['is_expired']:
-                    ctk.CTkLabel(inner, text="Offline lease expired — online authentication required",
+                    ctk.CTkLabel(status_bar, text="Lease: Expired (Online Check Required)",
                                  font=ctk.CTkFont(size=11),
-                                 text_color=COLORS['warning']).pack(anchor="w", pady=(0, 4))
+                                 text_color=COLORS['warning']).pack(side="right")
             except Exception:
                 pass
 
-        # Status
+        # Message / Status Feedback
         self.unlock_status = ctk.CTkLabel(frame, text="",
                                           font=ctk.CTkFont(size=12),
                                           text_color=COLORS['text_dim'])
         self.unlock_status.pack(pady=(0, 6))
 
-        # Buttons
+        # Action Buttons
         btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
         btn_frame.pack(fill="x")
 
-        ctk.CTkButton(btn_frame, text="Unlock Vault", height=42,
-                      font=ctk.CTkFont(size=14, weight="bold"),
-                      fg_color=COLORS['accent'], hover_color=COLORS['accent_hover'],
-                      corner_radius=10,
-                      command=self._do_unlock).pack(fill="x", pady=(0, 6))
-
-        ctk.CTkButton(btn_frame, text="🌐 Verify & Unlock with Google", height=36,
-                      font=ctk.CTkFont(size=12, weight="bold"),
-                      fg_color="#ffffff", hover_color="#f1f5f9",
-                      text_color="#1f2937", corner_radius=10,
-                      command=self._launch_unlock_google_auth).pack(fill="x", pady=(0, 8))
+        self.btn_unlock = ctk.CTkButton(btn_frame, text="Unlock Vault", height=40,
+                                        font=ctk.CTkFont(size=13, weight="bold"),
+                                        fg_color=COLORS['accent'], hover_color=COLORS['accent_hover'],
+                                        corner_radius=6,
+                                        command=self._do_unlock)
+        self.btn_unlock.pack(fill="x", pady=(0, 8))
 
         bottom_row = ctk.CTkFrame(btn_frame, fg_color="transparent")
         bottom_row.pack(fill="x")
 
-        ctk.CTkButton(bottom_row, text="Re-initialize Drive", height=30,
+        ctk.CTkButton(bottom_row, text="Change Working Vault...", height=28,
                       font=ctk.CTkFont(size=11),
                       fg_color="transparent", border_width=1,
                       border_color=COLORS['border'], hover_color=COLORS['bg_card'],
-                      text_color=COLORS['text_dim'], corner_radius=8,
-                      command=self._show_init_screen).pack(side="left")
+                      text_color=COLORS['text_dim'], corner_radius=4,
+                      command=self._open_existing_vault).pack(side="left")
 
-    def _launch_unlock_google_auth(self):
-        """Open browser for Google login during unlock and automatically focus back and unlock."""
-        import secrets
-        current_api = get_api_url()
-        session_id = f"unlock_{secrets.token_hex(8)}"
-        auth_url = f"{current_api.rstrip('/')}/auth/google?session_id={session_id}"
-        webbrowser.open(auth_url)
-
-        self.unlock_status.configure(text="⏳ Waiting for Google Sign-In in browser...", text_color=COLORS['warning'])
-
-        def poll_google():
-            import requests
-            start_t = time.time()
-            while time.time() - start_t < 180:
-                try:
-                    r = requests.get(f"{current_api.rstrip('/')}/api/auth/google/check-session?session_id={session_id}", timeout=5)
-                    if r.ok:
-                        data = r.json()
-                        if data.get('authenticated') and data.get('email'):
-                            verified_email = data['email']
-                            self.after(0, lambda e=verified_email: self._on_unlock_google_verified(e))
-                            return
-                except Exception:
-                    pass
-                time.sleep(1)
-
-        threading.Thread(target=poll_google, daemon=True).start()
-
-    def _on_unlock_google_verified(self, email: str):
-        self._focus_window()
-        self.unlock_email.delete(0, 'end')
-        self.unlock_email.insert(0, email)
-        self.unlock_status.configure(text=f"✅ Google Verified: {email}. Unlocking...", text_color=COLORS['success'])
-        self.after(200, self._do_unlock)
+        ctk.CTkButton(bottom_row, text="Re-initialize", height=28,
+                      font=ctk.CTkFont(size=11),
+                      fg_color="transparent", border_width=1,
+                      border_color=COLORS['border'], hover_color=COLORS['bg_card'],
+                      text_color=COLORS['text_dim'], corner_radius=4,
+                      command=self._show_init_screen).pack(side="right")
 
     def _do_unlock(self):
         config = load_config()
         if not config:
-            self.unlock_status.configure(text="Drive configuration missing.", text_color=COLORS['danger'])
+            self.unlock_status.configure(text="Vault configuration missing or corrupted.", text_color=COLORS['danger'])
             return
 
         email = self.unlock_email.get().strip()
-        if not email and config:
-            email = config.get('owner_email') or config.get('user_email', '')
         if not email:
-            self.unlock_status.configure(text="Please enter your email.", text_color=COLORS['danger'])
+            self.unlock_status.configure(text="User email is required.", text_color=COLORS['danger'])
             return
 
-        self.unlock_status.configure(text="Authenticating...", text_color=COLORS['warning'])
+        self.unlock_status.configure(text="Authorizing credentials...", text_color=COLORS['warning'])
+        self.btn_unlock.configure(state="disabled")
         self.update_idletasks()
 
         def do_auth():
             try:
-                k_local  = load_local_key()
+                k_local = load_local_key()
                 if not k_local:
-                    self.after(0, lambda: self.unlock_status.configure(
-                        text="Local key share missing from vault header.", text_color=COLORS['danger']))
+                    self.after(0, lambda: self._on_unlock_failed("Local key share missing from container header."))
                     return
 
                 fp       = self._current_fingerprint
-                api_url  = get_api_url(config)
+                api_url  = config.get('api_url', DEFAULT_API)
                 drive_id = config['drive_id']
 
                 result, cks, msg, was_online, request_id = lm.authenticate(
@@ -902,24 +878,25 @@ class USBKillswitchApp(ctk.CTk):
                         request_id, config, k_local, fp, email))
 
                 elif result == 'LOCKED':
-                    self.after(0, lambda: self.unlock_status.configure(
-                        text="DRIVE IS MARKED LOST — ACCESS PERMANENTLY BLOCKED",
-                        text_color=COLORS['danger']))
+                    self.after(0, lambda: self._on_unlock_failed("REMOTE KILLSWITCH ACTIVE: Storage access permanently revoked."))
 
                 elif result == 'DENIED':
-                    self.after(0, lambda: self.unlock_status.configure(
-                        text=f"Access denied: {msg}", text_color=COLORS['danger']))
+                    self.after(0, lambda: self._on_unlock_failed(f"Access denied: {msg}"))
 
-                else:  # OFFLINE_DENIED
-                    self.after(0, lambda: self.unlock_status.configure(
-                        text=msg, text_color=COLORS['danger']))
+                else:
+                    self.after(0, lambda: self._on_unlock_failed(msg))
 
             except Exception as e:
-                logger.exception("Unlock error")
-                self.after(0, lambda: self.unlock_status.configure(
-                    text=f"Error: {e}", text_color=COLORS['danger']))
+                logger.exception("Unlock exception")
+                self.after(0, lambda: self._on_unlock_failed(f"Connection failure: {e}"))
 
         threading.Thread(target=do_auth, daemon=True).start()
+
+    def _on_unlock_failed(self, msg: str):
+        if hasattr(self, 'btn_unlock') and self.btn_unlock.winfo_exists():
+            self.btn_unlock.configure(state="normal")
+        if hasattr(self, 'unlock_status') and self.unlock_status.winfo_exists():
+            self.unlock_status.configure(text=msg, text_color=COLORS['danger'])
 
     def _load_vault_workspace(self, k_local, cloud_key_hex, mode, msg):
         def _set_status(txt, color):
@@ -927,10 +904,8 @@ class USBKillswitchApp(ctk.CTk):
                 self.wait_status.configure(text=txt, text_color=color)
             elif hasattr(self, 'unlock_status') and self.unlock_status.winfo_exists():
                 self.unlock_status.configure(text=txt, text_color=color)
-            elif hasattr(self, 'startup_status') and self.startup_status.winfo_exists():
-                self.startup_status.configure(text=txt, text_color=color)
 
-        _set_status(f"Loading vault ({mode})...", COLORS['warning'])
+        _set_status(f"Decrypting tail manifest ({mode})...", COLORS['warning'])
         self.update_idletasks()
 
         def do_load():
@@ -938,7 +913,7 @@ class USBKillswitchApp(ctk.CTk):
                 k_cloud = ce.hex_to_key_bytes(cloud_key_hex)
                 manifest = ce.read_vault_manifest(VAULT_FILE, k_local, k_cloud)
 
-                # Auto-migrate legacy v2 vaults or loose metadata files to encapsulated v3!
+                # Encapsulate legacy files if needed
                 vmeta = ce.inspect_vault_header(VAULT_FILE)
                 if (vmeta and not vmeta.get('encapsulated')) or (CONFIG_FILE.exists() or LOCAL_KEY_FILE.exists()):
                     try:
@@ -951,11 +926,10 @@ class USBKillswitchApp(ctk.CTk):
                                     f.unlink()
                                 except Exception:
                                     pass
-                        logger.info("Auto-migrated legacy vault to v3 encapsulated vault; removed loose files.")
+                        logger.info("Migrated vault to encapsulated v3 format.")
                     except Exception as me:
-                        logger.warning(f"Auto-migration skipped: {me}")
+                        logger.warning(f"Migration bypassed: {me}")
 
-                # Initialize unified working directory for current session
                 work_dir = Path(tempfile.mkdtemp(prefix='zerotrust_session_'))
 
                 self.session['unlocked']        = True
@@ -970,7 +944,7 @@ class USBKillswitchApp(ctk.CTk):
                 self.after(0, lambda: self._show_workspace_screen())
 
             except Exception as e:
-                logger.exception("Manifest load error")
+                logger.exception("Manifest decryption failure")
                 self.after(0, lambda: _set_status(f"Decryption failed: {e}", COLORS['danger']))
                 if hasattr(self, 'startup_status') and self.startup_status.winfo_exists():
                     self.after(1500, self._show_unlock_screen)
@@ -978,7 +952,7 @@ class USBKillswitchApp(ctk.CTk):
         threading.Thread(target=do_load, daemon=True).start()
 
     # ──────────────────────────────────────────────────────────────────────
-    # Screen 3: Waiting for Approval (Modern Split Screen: QR Code + Google Login)
+    # View 3: Out-of-Band Authorization Gate (Mobile QR + Web Portal)
     # ──────────────────────────────────────────────────────────────────────
 
     def _show_waiting_screen(self, request_id, config, k_local, fingerprint, email):
@@ -990,144 +964,146 @@ class USBKillswitchApp(ctk.CTk):
         google_url  = f"{api_url.rstrip('/')}/auth/google?req={request_id}&email={email}"
 
         frame = ctk.CTkFrame(self, fg_color="transparent")
-        frame.pack(fill="both", expand=True, padx=32, pady=20)
+        frame.pack(fill="both", expand=True, padx=40, pady=24)
 
-        # Header Badge
+        # Header Section
         header_box = ctk.CTkFrame(frame, fg_color="transparent")
-        header_box.pack(pady=(0, 14))
+        header_box.pack(pady=(0, 14), anchor="w")
 
-        ctk.CTkLabel(header_box, text="⚡ ACCESS APPROVAL REQUIRED",
-                     font=ctk.CTkFont(size=11, weight="bold"),
-                     text_color=COLORS['warning']).pack()
-        ctk.CTkLabel(header_box, text="Authorize This Device",
+        ctk.CTkLabel(header_box, text="OUT-OF-BAND AUTHORIZATION",
+                     font=ctk.CTkFont(family="Consolas", size=10, weight="bold"),
+                     text_color=COLORS['warning']).pack(anchor="w")
+        ctk.CTkLabel(header_box, text="Authorization Required",
                      font=ctk.CTkFont(size=22, weight="bold"),
-                     text_color=COLORS['text']).pack(pady=(2, 2))
-        ctk.CTkLabel(header_box, text="The drive owner must grant permission via Mobile QR or Google Sign-In portal",
+                     text_color=COLORS['text']).pack(anchor="w", pady=(2, 2))
+        ctk.CTkLabel(header_box, text="Drive owner confirmation needed to release cryptographic key share",
                      font=ctk.CTkFont(size=12),
-                     text_color=COLORS['text_dim']).pack()
+                     text_color=COLORS['text_dim']).pack(anchor="w")
 
-        # Split Dual-Card Layout Container
+        # Split Dual-Panel Layout
         dual_card = ctk.CTkFrame(frame, fg_color="transparent")
         dual_card.pack(fill="x", pady=(0, 14))
 
-        # ─── LEFT CARD: Mobile QR Code Fast Approval ───
-        left_card = ctk.CTkFrame(dual_card, fg_color=COLORS['bg_card'], corner_radius=16,
+        # ─── LEFT: Mobile Camera QR Channel ───
+        left_card = ctk.CTkFrame(dual_card, fg_color=COLORS['bg_card'], corner_radius=10,
                                  border_width=1, border_color=COLORS['border'])
-        left_card.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        left_card.pack(side="left", fill="both", expand=True, padx=(0, 8))
 
         left_inner = ctk.CTkFrame(left_card, fg_color="transparent")
         left_inner.pack(fill="both", expand=True, padx=20, pady=18)
 
-        ctk.CTkLabel(left_inner, text="📱 Mobile Approval",
-                     font=ctk.CTkFont(size=14, weight="bold"),
+        ctk.CTkLabel(left_inner, text="Method A: Mobile Device",
+                     font=ctk.CTkFont(size=13, weight="bold"),
                      text_color=COLORS['text']).pack(anchor="w")
-        ctk.CTkLabel(left_inner, text="Scan with owner's phone camera",
+        ctk.CTkLabel(left_inner, text="Scan with mobile phone camera",
                      font=ctk.CTkFont(size=11),
-                     text_color=COLORS['text_muted']).pack(anchor="w", pady=(0, 12))
+                     text_color=COLORS['text_muted']).pack(anchor="w", pady=(0, 10))
 
-        # Code pill
-        code_pill = ctk.CTkFrame(left_inner, fg_color=COLORS['bg_input'], corner_radius=8)
-        code_pill.pack(fill="x", pady=(0, 10))
-        cp_inner = ctk.CTkFrame(code_pill, fg_color="transparent")
-        cp_inner.pack(padx=12, pady=6)
-        ctk.CTkLabel(cp_inner, text="REQUEST CODE:",
-                     font=ctk.CTkFont(size=10, weight="bold"),
-                     text_color=COLORS['text_muted']).pack(side="left")
-        ctk.CTkLabel(cp_inner, text=f"  {request_id}",
+        # Verification Code Display
+        code_box = ctk.CTkFrame(left_inner, fg_color=COLORS['bg_input'], corner_radius=6,
+                                border_width=1, border_color=COLORS['border_subtle'])
+        code_box.pack(fill="x", pady=(0, 10))
+        cb_inner = ctk.CTkFrame(code_box, fg_color="transparent")
+        cb_inner.pack(padx=12, pady=6)
+
+        ctk.CTkLabel(cb_inner, text="CODE:",
+                     font=ctk.CTkFont(family="Consolas", size=10, weight="bold"),
+                     text_color=COLORS['text_dim']).pack(side="left")
+        ctk.CTkLabel(cb_inner, text=f" {request_id}",
                      font=ctk.CTkFont(family="Consolas", size=16, weight="bold"),
                      text_color=COLORS['warning']).pack(side="left")
 
-        # QR Code Container
-        self._qr_container = ctk.CTkFrame(left_inner, fg_color=COLORS['bg_card_alt'], corner_radius=12,
+        # QR Bed
+        self._qr_container = ctk.CTkFrame(left_inner, fg_color=COLORS['bg_card_alt'], corner_radius=8,
                                           border_width=1, border_color=COLORS['border'])
         self._qr_container.pack(fill="x", pady=(0, 10))
 
         self._qr_image_label = None
         self._qr_shown = False
 
-        # Generate and show QR Code immediately by default
         try:
-            qr_img = generate_qr_ctk_image(approve_url, size=150)
+            qr_img = generate_qr_ctk_image(approve_url, size=140)
             self._qr_image_label = ctk.CTkLabel(self._qr_container, image=qr_img, text="")
-            self._qr_image_label.pack(padx=10, pady=10)
+            self._qr_image_label.pack(padx=8, pady=8)
             self._qr_shown = True
         except Exception as e:
-            logger.warning(f"QR render init failed: {e}")
+            logger.warning(f"QR init error: {e}")
 
         self._qr_toggle_btn = ctk.CTkButton(
-            left_inner, text="🙈 Hide QR Code" if self._qr_shown else "📷 Click to Show QR Code", height=34,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=COLORS['bg_input'], hover_color=COLORS['border'],
-            text_color=COLORS['text'], corner_radius=8,
+            left_inner, text="Hide QR Code" if self._qr_shown else "Show QR Code", height=30,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLORS['bg_input'], hover_color=COLORS['bg_hover'],
+            border_width=1, border_color=COLORS['border'],
+            text_color=COLORS['text'], corner_radius=4,
             command=lambda: self._toggle_qr_code(approve_url)
         )
         self._qr_toggle_btn.pack(fill="x")
 
-        # ─── RIGHT CARD: Continue with Google / Portal Auth ───
-        right_card = ctk.CTkFrame(dual_card, fg_color=COLORS['bg_card'], corner_radius=16,
+        # ─── RIGHT: Web Portal Channel ───
+        right_card = ctk.CTkFrame(dual_card, fg_color=COLORS['bg_card'], corner_radius=10,
                                   border_width=1, border_color=COLORS['border'])
-        right_card.pack(side="right", fill="both", expand=True, padx=(10, 0))
+        right_card.pack(side="right", fill="both", expand=True, padx=(8, 0))
 
         right_inner = ctk.CTkFrame(right_card, fg_color="transparent")
         right_inner.pack(fill="both", expand=True, padx=20, pady=18)
 
-        ctk.CTkLabel(right_inner, text="🌐 Web Portal Approval",
-                     font=ctk.CTkFont(size=14, weight="bold"),
+        ctk.CTkLabel(right_inner, text="Method B: Web Portal",
+                     font=ctk.CTkFont(size=13, weight="bold"),
                      text_color=COLORS['text']).pack(anchor="w")
-        ctk.CTkLabel(right_inner, text="Sign in as drive owner in your browser",
+        ctk.CTkLabel(right_inner, text="Authorize in desktop browser",
                      font=ctk.CTkFont(size=11),
-                     text_color=COLORS['text_muted']).pack(anchor="w", pady=(0, 16))
+                     text_color=COLORS['text_muted']).pack(anchor="w", pady=(0, 14))
 
-        # Google Button
         ctk.CTkButton(
-            right_inner, text="  Continue with Google", height=44,
-            font=ctk.CTkFont(size=13, weight="bold"),
-            fg_color="#ffffff", hover_color="#f1f5f9",
-            text_color="#1f2937", corner_radius=10,
+            right_inner, text="Sign In with Google to Authorize", height=38,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COLORS['accent'], hover_color=COLORS['accent_hover'],
+            text_color="#ffffff", corner_radius=6,
             command=lambda: webbrowser.open(google_url)
         ).pack(fill="x", pady=(0, 10))
 
-        ctk.CTkLabel(right_inner, text="Clicking opens your default browser to log in with Google, manage drives & grant instant approval.",
+        ctk.CTkLabel(right_inner,
+                     text="Opens your default browser. Once confirmed by the owner, this application unlocks automatically.",
                      font=ctk.CTkFont(size=11),
                      text_color=COLORS['text_dim'],
-                     wraplength=280).pack(pady=(0, 12))
+                     wraplength=270).pack(pady=(0, 12))
 
-        # Direct Portal Link button
         ctk.CTkButton(
-            right_inner, text="Open Direct Approval Link", height=32,
+            right_inner, text="Open Direct Approval Link", height=30,
             font=ctk.CTkFont(size=11),
-            fg_color=COLORS['bg_input'], hover_color=COLORS['border'],
-            text_color=COLORS['accent'], corner_radius=8,
+            fg_color=COLORS['bg_input'], hover_color=COLORS['bg_hover'],
+            border_width=1, border_color=COLORS['border'],
+            text_color=COLORS['text'], corner_radius=4,
             command=lambda: webbrowser.open(approve_url)
         ).pack(fill="x")
 
         # ─── Bottom Status & Polling ───
-        bottom_card = ctk.CTkFrame(frame, fg_color=COLORS['bg_card'], corner_radius=12,
+        status_card = ctk.CTkFrame(frame, fg_color=COLORS['bg_card'], corner_radius=8,
                                    border_width=1, border_color=COLORS['border'])
-        bottom_card.pack(fill="x", pady=(0, 10))
+        status_card.pack(fill="x", pady=(0, 12))
 
-        bc_inner = ctk.CTkFrame(bottom_card, fg_color="transparent")
-        bc_inner.pack(fill="x", padx=16, pady=12)
+        sc_inner = ctk.CTkFrame(status_card, fg_color="transparent")
+        sc_inner.pack(fill="x", padx=16, pady=10)
 
-        self.wait_status = ctk.CTkLabel(bc_inner, text="⏳ Waiting for owner decision (polling every 2s)...",
+        self.wait_status = ctk.CTkLabel(sc_inner, text="Listening for authorization signal (polling every 2s)...",
                                         font=ctk.CTkFont(size=12),
                                         text_color=COLORS['text_dim'])
         self.wait_status.pack(side="left")
 
-        self.wait_progress = ctk.CTkProgressBar(bc_inner, mode="indeterminate",
-                                                 width=200, height=4,
+        self.wait_progress = ctk.CTkProgressBar(sc_inner, mode="indeterminate",
+                                                 width=180, height=3,
                                                  progress_color=COLORS['accent'])
-        self.wait_progress.pack(side="right", padx=(10, 0))
+        self.wait_progress.pack(side="right", padx=(8, 0))
         self.wait_progress.start()
 
-        # Cancel button
-        ctk.CTkButton(frame, text="Cancel Request", height=32, width=140,
+        # Cancellation
+        ctk.CTkButton(frame, text="Cancel Request", height=30, width=130,
                       fg_color="transparent", border_width=1,
                       border_color=COLORS['border'], hover_color=COLORS['bg_card'],
-                      text_color=COLORS['text_dim'], corner_radius=8,
+                      text_color=COLORS['text_dim'], corner_radius=4,
                       command=self._cancel_wait).pack()
 
-        # Start 2-second background polling
+        # 2-second background poll thread
         drive_id = config['drive_id']
 
         def poll_loop():
@@ -1149,7 +1125,7 @@ class USBKillswitchApp(ctk.CTk):
                         return
 
                 except Exception as e:
-                    logger.warning(f"Poll loop error: {e}")
+                    logger.warning(f"Polling warning: {e}")
 
                 self._poll_stop.wait(2)
 
@@ -1157,25 +1133,24 @@ class USBKillswitchApp(ctk.CTk):
         self._poll_thread.start()
 
     def _toggle_qr_code(self, approve_url: str):
-        """Expand/collapse QR code on user click."""
         if not self._qr_shown:
             try:
-                qr_img = generate_qr_ctk_image(approve_url, size=150)
+                qr_img = generate_qr_ctk_image(approve_url, size=140)
                 if not self._qr_image_label:
                     self._qr_image_label = ctk.CTkLabel(self._qr_container, image=qr_img, text="")
-                    self._qr_image_label.pack(padx=10, pady=10)
+                    self._qr_image_label.pack(padx=8, pady=8)
                 else:
                     self._qr_image_label.configure(image=qr_img)
-                    self._qr_image_label.pack(padx=10, pady=10)
+                    self._qr_image_label.pack(padx=8, pady=8)
 
-                self._qr_toggle_btn.configure(text="🙈 Hide QR Code")
+                self._qr_toggle_btn.configure(text="Hide QR Code")
                 self._qr_shown = True
             except Exception as e:
-                logger.warning(f"QR render failed: {e}")
+                logger.warning(f"QR render exception: {e}")
         else:
             if self._qr_image_label:
                 self._qr_image_label.pack_forget()
-            self._qr_toggle_btn.configure(text="📷 Click to Show QR Code")
+            self._qr_toggle_btn.configure(text="Show QR Code")
             self._qr_shown = False
 
     def _cancel_wait(self):
@@ -1185,19 +1160,18 @@ class USBKillswitchApp(ctk.CTk):
     def _on_approval_granted(self, k_local, cloud_key_hex, msg):
         self._focus_window()
         self.wait_progress.stop()
-        self.wait_status.configure(text=f"✅ Access Approved! {msg}", text_color=COLORS['success'])
+        self.wait_status.configure(text=f"Authorization granted: {msg}", text_color=COLORS['success'])
         self.update_idletasks()
-        self.after(500, lambda: self._load_vault_workspace(k_local, cloud_key_hex, "Approved", msg))
+        self.after(400, lambda: self._load_vault_workspace(k_local, cloud_key_hex, "Authorized", msg))
 
     def _on_approval_denied(self):
         self._focus_window()
         self.wait_progress.stop()
-        self.wait_status.configure(text="🚫 Access DENIED by drive owner.",
-                                   text_color=COLORS['danger'])
-        self.after(2000, self._show_unlock_screen)
+        self.wait_status.configure(text="Authorization rejected by drive owner.", text_color=COLORS['danger'])
+        self.after(1800, self._show_unlock_screen)
 
     # ──────────────────────────────────────────────────────────────────────
-    # Screen 4: Vault Workspace (Manifest TreeView, On-Demand Decrypt, Directory Explorer, Lock & Save)
+    # View 4: Vault File Workspace (Engineered Explorer)
     # ──────────────────────────────────────────────────────────────────────
 
     def _show_workspace_screen(self):
@@ -1205,11 +1179,10 @@ class USBKillswitchApp(ctk.CTk):
         config = load_config()
         manifest = self.session.get('manifest', {})
         raw_files = manifest.get('files', [])
-        # Exclude OS system volume metadata (e.g. System Volume Information, $RECYCLE.BIN)
         files = [f for f in raw_files if not ce.is_system_file(f.get('path', ''))]
 
-        # ─── Top Nav Bar ───
-        top = ctk.CTkFrame(self, fg_color=COLORS['bg_card'], height=54, corner_radius=0,
+        # Top Control Bar
+        top = ctk.CTkFrame(self, fg_color=COLORS['bg_card'], height=52, corner_radius=0,
                            border_width=1, border_color=COLORS['border'])
         top.pack(fill="x")
         top.pack_propagate(False)
@@ -1217,77 +1190,82 @@ class USBKillswitchApp(ctk.CTk):
         top_inner = ctk.CTkFrame(top, fg_color="transparent")
         top_inner.pack(fill="both", expand=True, padx=16)
 
-        ctk.CTkLabel(top_inner, text=f"📂  {config.get('label', 'Vault')}",
-                     font=ctk.CTkFont(size=15, weight="bold"),
+        vault_title = config.get('label', 'Storage Vault') if config else 'Storage Vault'
+        ctk.CTkLabel(top_inner, text=vault_title,
+                     font=ctk.CTkFont(size=14, weight="bold"),
                      text_color=COLORS['text']).pack(side="left")
 
-        # Status badge
-        status_frame = ctk.CTkFrame(top_inner, fg_color=COLORS['bg_input'], corner_radius=12)
-        status_frame.pack(side="left", padx=(16, 0))
+        # Session Pill
+        status_frame = ctk.CTkFrame(top_inner, fg_color=COLORS['success_bg'], corner_radius=4,
+                                   border_width=1, border_color=COLORS['border_subtle'])
+        status_frame.pack(side="left", padx=(14, 0))
         sf_inner = ctk.CTkFrame(status_frame, fg_color="transparent")
-        sf_inner.pack(padx=10, pady=3)
+        sf_inner.pack(padx=8, pady=2)
 
         self.ws_status_dot = ctk.CTkLabel(sf_inner, text="●",
-                                          font=ctk.CTkFont(size=10),
+                                          font=ctk.CTkFont(size=9),
                                           text_color=COLORS['success'])
-        self.ws_status_dot.pack(side="left", padx=(0, 5))
+        self.ws_status_dot.pack(side="left", padx=(0, 4))
 
-        self.ws_status_text = ctk.CTkLabel(sf_inner, text="ACTIVE SESSION",
-                                           font=ctk.CTkFont(size=11, weight="bold"),
+        self.ws_status_text = ctk.CTkLabel(sf_inner, text="SESSION ACTIVE",
+                                           font=ctk.CTkFont(family="Consolas", size=10, weight="bold"),
                                            text_color=COLORS['success'])
         self.ws_status_text.pack(side="left")
 
-        # Session Timer
-        self.ws_timer = ctk.CTkLabel(top_inner, text="",
-                                     font=ctk.CTkFont(size=12),
+        # Timer
+        self.ws_timer = ctk.CTkLabel(top_inner, text="Session: 00:00:00",
+                                     font=ctk.CTkFont(family="Consolas", size=11),
                                      text_color=COLORS['text_dim'])
         self.ws_timer.pack(side="right", padx=(0, 10))
 
-        # Lock buttons
-        ctk.CTkButton(top_inner, text="🔒 Lock & Save", height=32, width=120,
-                      font=ctk.CTkFont(size=12, weight="bold"),
+        # Lock Command Actions
+        ctk.CTkButton(top_inner, text="Save & Lock Vault", height=32, width=130,
+                      font=ctk.CTkFont(size=11, weight="bold"),
                       fg_color=COLORS['accent'], hover_color=COLORS['accent_hover'],
-                      corner_radius=8,
+                      corner_radius=4,
                       command=self._do_lock_and_save).pack(side="right", padx=(6, 0))
 
         ctk.CTkButton(top_inner, text="Discard & Lock", height=32, width=110,
                       font=ctk.CTkFont(size=11),
-                      fg_color=COLORS['danger'], hover_color=COLORS['danger_hover'],
-                      corner_radius=8,
+                      fg_color=COLORS['danger_bg'], hover_color=COLORS['danger_hover'],
+                      border_width=1, border_color=COLORS['danger'],
+                      text_color=COLORS['danger'], corner_radius=4,
                       command=self._do_lock_no_save).pack(side="right", padx=(6, 0))
 
-        # ─── Main Content ───
+        # Main Workspace Container
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.pack(fill="both", expand=True, padx=16, pady=12)
 
-        browser_frame = ctk.CTkFrame(main, fg_color=COLORS['bg_card'], corner_radius=14,
+        browser_frame = ctk.CTkFrame(main, fg_color=COLORS['bg_card'], corner_radius=8,
                                     border_width=1, border_color=COLORS['border'])
         browser_frame.pack(fill="both", expand=True)
 
-        # Header toolbar
+        # File List Toolbar
         browser_header = ctk.CTkFrame(browser_frame, fg_color="transparent")
         browser_header.pack(fill="x", padx=16, pady=(12, 8))
 
-        ctk.CTkLabel(browser_header, text=f"Encrypted Vault Files ({len(files)} items)",
-                     font=ctk.CTkFont(size=13, weight="bold"),
+        ctk.CTkLabel(browser_header, text=f"Encrypted File Manifest ({len(files)} items)",
+                     font=ctk.CTkFont(size=12, weight="bold"),
                      text_color=COLORS['text_dim']).pack(side="left")
 
         btn_bar = ctk.CTkFrame(browser_header, fg_color="transparent")
         btn_bar.pack(side="right")
 
-        ctk.CTkButton(btn_bar, text="📄 Open File", height=28, width=105,
+        ctk.CTkButton(btn_bar, text="Open Selected Item", height=28, width=130,
                       font=ctk.CTkFont(size=11),
-                      fg_color=COLORS['bg_input'], hover_color=COLORS['border'],
-                      text_color=COLORS['text'], corner_radius=6,
+                      fg_color=COLORS['bg_input'], hover_color=COLORS['bg_hover'],
+                      border_width=1, border_color=COLORS['border'],
+                      text_color=COLORS['text'], corner_radius=4,
                       command=self._open_selected_item).pack(side="left", padx=(0, 6))
 
-        ctk.CTkButton(btn_bar, text="✏️ Edit in Explorer", height=28, width=145,
+        ctk.CTkButton(btn_bar, text="Explore in File Manager", height=28, width=150,
                       font=ctk.CTkFont(size=11, weight="bold"),
-                      fg_color=COLORS['accent_purple'], hover_color='#7c3aed',
-                      text_color='#ffffff', corner_radius=6,
+                      fg_color=COLORS['bg_input'], hover_color=COLORS['bg_hover'],
+                      border_width=1, border_color=COLORS['border'],
+                      text_color=COLORS['text'], corner_radius=4,
                       command=self._open_in_explorer).pack(side="left")
 
-        # Treeview styling
+        # TTK Treeview Styling (Engineered Dark Theme)
         style = ttk.Style()
         style.theme_use('clam')
         style.configure("Vault.Treeview",
@@ -1300,7 +1278,8 @@ class USBKillswitchApp(ctk.CTk):
         style.configure("Vault.Treeview.Heading",
                         background=COLORS['bg_input'],
                         foreground=COLORS['text_dim'],
-                        borderwidth=0,
+                        borderwidth=1,
+                        relief="flat",
                         font=('Inter', 10, 'bold'))
         style.map("Vault.Treeview",
                   background=[('selected', COLORS['accent'])],
@@ -1312,12 +1291,12 @@ class USBKillswitchApp(ctk.CTk):
         self.file_tree = ttk.Treeview(tree_container, style="Vault.Treeview",
                                       columns=("size", "type", "modified"), show="tree headings",
                                       selectmode="browse")
-        self.file_tree.heading("#0", text="Name / Path", anchor="w")
+        self.file_tree.heading("#0", text="Path / Item", anchor="w")
         self.file_tree.heading("size", text="Size", anchor="e")
         self.file_tree.heading("type", text="Type", anchor="w")
-        self.file_tree.heading("modified", text="Modified", anchor="w")
+        self.file_tree.heading("modified", text="Timestamp", anchor="w")
 
-        self.file_tree.column("#0", width=380, minwidth=240)
+        self.file_tree.column("#0", width=400, minwidth=260)
         self.file_tree.column("size", width=90, anchor="e")
         self.file_tree.column("type", width=70, anchor="w")
         self.file_tree.column("modified", width=140, anchor="w")
@@ -1328,14 +1307,14 @@ class USBKillswitchApp(ctk.CTk):
         self.file_tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        # Double click opens file or directory
+        # Ergonomic Interactions: double click or enter key
         self.file_tree.bind("<Double-1>", lambda event: self._open_selected_item())
+        self.file_tree.bind("<Return>", lambda event: self._open_selected_item())
 
-        # Populate tree
         self._populate_manifest_tree(files)
 
-        # ─── Bottom Status Footer ───
-        bottom = ctk.CTkFrame(self, fg_color=COLORS['bg_card'], height=34, corner_radius=0,
+        # Bottom Status Shelf
+        bottom = ctk.CTkFrame(self, fg_color=COLORS['bg_card'], height=32, corner_radius=0,
                               border_width=1, border_color=COLORS['border'])
         bottom.pack(fill="x")
         bottom.pack_propagate(False)
@@ -1344,14 +1323,12 @@ class USBKillswitchApp(ctk.CTk):
         bottom_inner.pack(fill="both", expand=True, padx=16)
 
         drive_id_short = config.get('drive_id', '?')[:8] if config else '?'
-        dead_space = manifest.get('dead_space_bytes', 0)
-        dead_str = f" | Dead Space: {dead_space // 1024} KB" if dead_space > 0 else ""
-        
-        ctk.CTkLabel(bottom_inner, text=f"Drive ID: {drive_id_short}...{dead_str}",
-                     font=ctk.CTkFont(size=10),
+        ctk.CTkLabel(bottom_inner, text=f"Drive ID: {drive_id_short}...",
+                     font=ctk.CTkFont(family="Consolas", size=10),
                      text_color=COLORS['text_muted']).pack(side="left")
 
-        self.ws_status_footer = ctk.CTkLabel(bottom_inner, text="Vault on-demand mode active — modifications are auto-saved on Lock",
+        self.ws_status_footer = ctk.CTkLabel(bottom_inner,
+                                             text="On-demand session ready — modifications are incrementally packaged upon lock",
                                              font=ctk.CTkFont(size=10),
                                              text_color=COLORS['text_muted'])
         self.ws_status_footer.pack(side="right")
@@ -1361,9 +1338,8 @@ class USBKillswitchApp(ctk.CTk):
     def _populate_manifest_tree(self, file_entries: List[dict]):
         self.file_tree.delete(*self.file_tree.get_children())
         nodes = {'': ''}
-        self._tree_item_map = {}  # item_id -> {'is_dir': bool, 'path': str, 'entry': dict}
+        self._tree_item_map = {}
 
-        # Ensure no system volume metadata files are added to tree view
         file_entries = [e for e in file_entries if not ce.is_system_file(e.get('path', ''))]
 
         for entry in sorted(file_entries, key=lambda e: e['path']):
@@ -1375,8 +1351,8 @@ class USBKillswitchApp(ctk.CTk):
                 curr_path = f"{curr_path}/{folder}" if curr_path else folder
                 if curr_path not in nodes:
                     node_id = self.file_tree.insert(parent_id, 'end',
-                                                     text=f"📁  {folder}/",
-                                                     values=('', 'Folder', ''),
+                                                     text=f"▸ {folder}/",
+                                                     values=('', 'DIR', ''),
                                                      open=True)
                     nodes[curr_path] = node_id
                     self._tree_item_map[node_id] = {'is_dir': True, 'path': curr_path, 'entry': None}
@@ -1396,8 +1372,8 @@ class USBKillswitchApp(ctk.CTk):
                 '.txt': 'Text', '.md': 'Markdown', '.json': 'JSON',
                 '.py': 'Python', '.js': 'JS', '.html': 'HTML',
                 '.css': 'CSS', '.pdf': 'PDF', '.png': 'Image',
-                '.jpg': 'Image', '.jpeg': 'Image', '.docx': 'Doc',
-                '.xlsx': 'Excel', '.csv': 'Data',
+                '.jpg': 'Image', '.jpeg': 'Image', '.docx': 'Document',
+                '.xlsx': 'Spreadsheet', '.csv': 'Data',
             }
             file_type = type_map.get(ext, ext[1:].upper() if ext else 'File')
 
@@ -1405,15 +1381,14 @@ class USBKillswitchApp(ctk.CTk):
             mtime_str = time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime)) if mtime else '-'
 
             item_id = self.file_tree.insert(parent_id, 'end',
-                                            text=f"📄  {filename}",
+                                            text=f"  {filename}",
                                             values=(size_str, file_type, mtime_str))
             self._tree_item_map[item_id] = {'is_dir': False, 'path': entry['path'], 'entry': entry}
 
     def _open_selected_item(self):
-        """Opens selected file in default app or opens folder in Windows Explorer."""
+        """Open single file or browse directory based on selection."""
         selected = self.file_tree.selection()
         if not selected:
-            # If nothing selected, open entire vault root in explorer
             self._open_all_in_explorer()
             return
 
@@ -1423,14 +1398,11 @@ class USBKillswitchApp(ctk.CTk):
             return
 
         if meta['is_dir']:
-            # Selected a folder node -> decrypt and open that specific directory in explorer
             self._open_directory_path(meta['path'])
         else:
-            # Selected a single file -> decrypt and open file
             self._open_single_file(meta['entry'])
 
     def _open_in_explorer(self):
-        """Open selected folder in Explorer, or extract and open full vault if root/none selected."""
         selected = self.file_tree.selection()
         if not selected:
             self._open_all_in_explorer()
@@ -1445,24 +1417,21 @@ class USBKillswitchApp(ctk.CTk):
         if meta['is_dir']:
             self._open_directory_path(meta['path'])
         else:
-            # If file selected, open its parent folder
             parent_dir = str(Path(meta['path']).parent).replace('\\', '/')
             if parent_dir and parent_dir != '.':
                 self._open_directory_path(parent_dir)
             else:
                 self._open_all_in_explorer()
 
-    # Backwards-compatibility alias
     _open_selected_folder = _open_in_explorer
 
     def _open_single_file(self, entry: dict):
-        """Decrypt single file to working directory and launch default application."""
         k_local = self.session.get('k_local')
         cloud_key_hex = self.session.get('cloud_key_share')
         work_dir = self.session.get('working_dir')
 
         if not k_local or not cloud_key_hex or not work_dir:
-            messagebox.showerror("Error", "Session key material missing.")
+            messagebox.showerror("Session Error", "Cryptographic key material missing.")
             return
 
         try:
@@ -1470,7 +1439,6 @@ class USBKillswitchApp(ctk.CTk):
             rel_path = entry['path']
             out_path = work_dir / rel_path
 
-            # Decrypt if not already decrypted
             if not out_path.exists():
                 plaintext = ce.decrypt_single_file(VAULT_FILE, k_local, k_cloud, entry)
                 out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1482,7 +1450,6 @@ class USBKillswitchApp(ctk.CTk):
 
             self.session['opened_files'][rel_path] = out_path
 
-            # Launch default application
             if sys.platform == 'win32':
                 os.startfile(str(out_path))
             elif sys.platform == 'darwin':
@@ -1490,15 +1457,14 @@ class USBKillswitchApp(ctk.CTk):
             else:
                 subprocess.Popen(['xdg-open', str(out_path)])
 
-            self.ws_status_footer.configure(text=f"Opened: {rel_path} — edits will be saved on Lock")
-            self.ws_status_text.configure(text="EDIT MODE (ACTIVE)", text_color=COLORS['warning'])
+            self.ws_status_footer.configure(text=f"Active File: {rel_path} (edits recorded on Lock)")
+            self.ws_status_text.configure(text="WORKSPACE ACTIVE", text_color=COLORS['warning'])
 
         except Exception as e:
-            logger.exception("Single file open error")
-            messagebox.showerror("Decryption Error", f"Could not decrypt file: {e}")
+            logger.exception("Single file decrypt error")
+            messagebox.showerror("Decryption Error", f"Could not decrypt item: {e}")
 
     def _open_directory_path(self, dir_prefix: str):
-        """Decrypt all files inside a specific directory prefix and open in Windows Explorer."""
         k_local = self.session.get('k_local')
         cloud_key_hex = self.session.get('cloud_key_share')
         manifest = self.session.get('manifest')
@@ -1507,7 +1473,7 @@ class USBKillswitchApp(ctk.CTk):
         if not k_local or not cloud_key_hex or not manifest or not work_dir:
             return
 
-        self.ws_status_text.configure(text="EXTRACTING...", text_color=COLORS['warning'])
+        self.ws_status_text.configure(text="DECRYPTING DIR...", text_color=COLORS['warning'])
         self.update_idletasks()
 
         def do_extract():
@@ -1518,7 +1484,6 @@ class USBKillswitchApp(ctk.CTk):
                     dir_prefix=dir_prefix, target_dir=work_dir
                 )
 
-                # Record all extracted files
                 clean_p = dir_prefix.strip('/')
                 for f in manifest.get('files', []):
                     if f['path'] == clean_p or f['path'].startswith(clean_p + '/'):
@@ -1530,19 +1495,18 @@ class USBKillswitchApp(ctk.CTk):
                 self.after(0, lambda: self._on_directory_ready(target_folder, clean_p))
 
             except Exception as e:
-                logger.exception("Directory decrypt error")
+                logger.exception("Directory decrypt failure")
                 self.after(0, lambda: messagebox.showerror("Decryption Error", f"Could not open directory: {e}"))
-                self.after(0, lambda: self.ws_status_text.configure(text="ACTIVE SESSION", text_color=COLORS['success']))
+                self.after(0, lambda: self.ws_status_text.configure(text="SESSION ACTIVE", text_color=COLORS['success']))
 
         threading.Thread(target=do_extract, daemon=True).start()
 
     def _on_directory_ready(self, target_folder: Path, dir_name: str):
-        self.ws_status_text.configure(text="EDIT MODE (ACTIVE)", text_color=COLORS['warning'])
-        self.ws_status_footer.configure(text=f"Opened directory: {dir_name}/ in Explorer")
+        self.ws_status_text.configure(text="WORKSPACE ACTIVE", text_color=COLORS['warning'])
+        self.ws_status_footer.configure(text=f"Opened directory {dir_name}/ in system file manager")
         self._open_folder(target_folder)
 
     def _open_all_in_explorer(self):
-        """Extract entire vault to working directory and open root in Explorer."""
         k_local = self.session.get('k_local')
         cloud_key_hex = self.session.get('cloud_key_share')
         manifest = self.session.get('manifest')
@@ -1562,7 +1526,6 @@ class USBKillswitchApp(ctk.CTk):
                     VAULT_FILE, k_local, k_cloud, manifest,
                     file_entries=clean_entries
                 )
-                # Copy into unified work dir
                 ce.decrypt_directory_to_working_dir(
                     VAULT_FILE, k_local, k_cloud, manifest,
                     dir_prefix='', target_dir=work_dir
@@ -1576,18 +1539,17 @@ class USBKillswitchApp(ctk.CTk):
 
             except Exception as e:
                 logger.exception("Bulk decrypt error")
-                self.after(0, lambda: messagebox.showerror("Decryption Error", f"Bulk decrypt failed: {e}"))
-                self.after(0, lambda: self.ws_status_text.configure(text="ACTIVE SESSION", text_color=COLORS['success']))
+                self.after(0, lambda: messagebox.showerror("Decryption Error", f"Extraction failed: {e}"))
+                self.after(0, lambda: self.ws_status_text.configure(text="SESSION ACTIVE", text_color=COLORS['success']))
 
         threading.Thread(target=do_bulk, daemon=True).start()
 
     def _on_bulk_ready(self, work_dir: Path):
-        self.ws_status_text.configure(text="EDIT MODE (FULL VAULT)", text_color=COLORS['warning'])
-        self.ws_status_footer.configure(text="All files extracted to temporary Explorer workspace")
+        self.ws_status_text.configure(text="WORKSPACE ACTIVE (FULL)", text_color=COLORS['warning'])
+        self.ws_status_footer.configure(text="Full vault extracted to temporary session directory")
         self._open_folder(work_dir)
 
     def _do_lock_and_save(self):
-        """Inspects all opened/edited files, updates vault.enc incrementally, and wipes temp session."""
         if not self.session.get('unlocked'):
             return
 
@@ -1597,7 +1559,7 @@ class USBKillswitchApp(ctk.CTk):
         cloud_key_hex = self.session.get('cloud_key_share')
         is_full = self.session.get('is_full_extract', False)
 
-        self.ws_status_text.configure(text="SAVING & LOCKING...", text_color=COLORS['warning'])
+        self.ws_status_text.configure(text="PACKAGING & LOCKING...", text_color=COLORS['warning'])
         self.update_idletasks()
 
         def do_save():
@@ -1605,21 +1567,19 @@ class USBKillswitchApp(ctk.CTk):
                 k_cloud = ce.hex_to_key_bytes(cloud_key_hex)
 
                 if working_dir and Path(working_dir).exists() and manifest:
-                    # Update vault incrementally:
-                    # If full extraction, deleted files are synced. If partial, untouched files are kept.
                     new_manifest = ce.update_vault_on_lock(
                         VAULT_FILE, k_local, k_cloud, Path(working_dir), manifest,
                         allow_partial=(not is_full)
                     )
                     ce.secure_wipe_temp(Path(working_dir))
-                    logger.info("Vault updated and temp working files securely wiped.")
+                    logger.info("Vault package updated and temporary files wiped.")
 
                 self.after(0, self._lock_cleanup_and_exit)
 
             except Exception as e:
-                logger.exception("Save & lock error")
-                self.after(0, lambda: messagebox.showerror("Save Error", f"Failed to save vault changes: {e}"))
-                self.after(0, lambda: self.ws_status_text.configure(text="ACTIVE SESSION", text_color=COLORS['success']))
+                logger.exception("Save and lock failure")
+                self.after(0, lambda: messagebox.showerror("Save Error", f"Could not package vault changes: {e}"))
+                self.after(0, lambda: self.ws_status_text.configure(text="SESSION ACTIVE", text_color=COLORS['success']))
 
         threading.Thread(target=do_save, daemon=True).start()
 
@@ -1627,11 +1587,11 @@ class USBKillswitchApp(ctk.CTk):
         if not self.session.get('unlocked'):
             return
 
-        if not messagebox.askyesno("Discard & Lock",
-                                    "Discard all working edits and securely wipe temporary session files?"):
+        if not messagebox.askyesno("Discard Changes",
+                                    "Discard all working file modifications and securely erase temporary session data?"):
             return
 
-        self.ws_status_text.configure(text="WIPING...", text_color=COLORS['danger'])
+        self.ws_status_text.configure(text="WIPING SESSION...", text_color=COLORS['danger'])
         self.update_idletasks()
 
         def do_wipe():
@@ -1664,12 +1624,7 @@ class USBKillswitchApp(ctk.CTk):
         hrs  = mins // 60
         mins = mins % 60
 
-        if hrs > 0:
-            timer_text = f"Session: {hrs}h {mins}m {secs}s"
-        elif mins > 0:
-            timer_text = f"Session: {mins}m {secs}s"
-        else:
-            timer_text = f"Session: {secs}s"
+        timer_text = f"Session: {hrs:02d}:{mins:02d}:{secs:02d}"
 
         try:
             self.ws_timer.configure(text=timer_text)
@@ -1687,10 +1642,10 @@ class USBKillswitchApp(ctk.CTk):
             else:
                 subprocess.Popen(['xdg-open', str(folder)])
         except Exception as e:
-            messagebox.showerror("Error", f"Could not open folder: {e}")
+            messagebox.showerror("Explorer Error", f"Could not launch file manager: {e}")
 
     # ──────────────────────────────────────────────────────────────────────
-    # Window Lifecycle
+    # Lifecycle
     # ──────────────────────────────────────────────────────────────────────
 
     def _clear_window(self):
@@ -1707,7 +1662,7 @@ class USBKillswitchApp(ctk.CTk):
             working_dir = self.session.get('working_dir')
             if working_dir and Path(working_dir).exists():
                 ce.secure_wipe_temp(Path(working_dir))
-            logger.info("Session wiped on exit.")
+            logger.info("Session files wiped on exit.")
         self.destroy()
 
 

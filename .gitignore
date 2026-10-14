@@ -144,3 +144,12 @@ __pycache__/
 build/
 dist/
 *.spec
+
+# SQLite Database & Data Storage (Clean Slate)
+*.db
+*.db-shm
+*.db-wal
+*.db.v1.bak
+data/*.db*
+backend/data/*.db*
+!backend/data/.gitkeep
