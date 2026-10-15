@@ -1111,13 +1111,20 @@
     }
 
     async function markLost(driveId) {
-      if (!confirm('Engage killswitch? All hardware cryptographic tokens for this drive will be immediately revoked.')) return;
+      if (!confirm('Engage killswitch? Storage access will be immediately blocked for all users (including owner) until reactivated.')) return;
+
+      const removeUsers = confirm('Do you also want to remove all authorized users from the access list?\n\n• Click OK to REMOVE everyone from access list (they must request access again after reactivation).\n• Click Cancel to KEEP them in access list (they will regain access once you reactivate).');
+
       try {
         const { status, data } = await apiFetch('/api/mark-lost', {
-          method: 'POST', body: JSON.stringify({ drive_id: driveId, reason: 'Remote killswitch invoked from admin console' })
+          method: 'POST', body: JSON.stringify({ 
+            drive_id: driveId, 
+            reason: 'Remote killswitch invoked from admin console',
+            remove_access_list: removeUsers
+          })
         });
         if (status === 200) {
-          showToast('Drive disabled. Killswitch active.', 'error');
+          showToast(removeUsers ? 'Drive disabled & access list cleared.' : 'Drive disabled. Killswitch active.', 'error');
           refreshAll();
         } else {
           showToast(data.error || 'Command failed', 'error');

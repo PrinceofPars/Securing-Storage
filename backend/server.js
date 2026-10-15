@@ -1303,21 +1303,12 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
       const lease = generateLeaseToken(drive_id, fingerprint_hash, leaseSeconds);
 
       // Auto-register device as trusted for this authorized user so future sessions on this machine are trusted
-      const existingDevice = db.prepare(
-        'SELECT id FROM trusted_devices WHERE drive_id = ? AND hardware_fingerprint = ?'
-      ).get(drive_id, fingerprint_hash);
-
       const now = Math.floor(Date.now() / 1000);
-      if (!existingDevice) {
-        db.prepare(`
-          INSERT INTO trusted_devices (drive_id, hardware_fingerprint, trust_scope, registered_at, expires_at)
-          VALUES (?, ?, 'LEASE', ?, ?)
-        `).run(drive_id, fingerprint_hash, now, now + leaseSeconds);
-      } else {
-        db.prepare(`
-          UPDATE trusted_devices SET expires_at = ? WHERE id = ?
-        `).run(now + leaseSeconds, existingDevice.id);
-      }
+      db.prepare(`
+        INSERT OR REPLACE INTO trusted_devices
+          (drive_id, hardware_fingerprint, user_email, trust_scope, expires_at, created_at)
+        VALUES (?, ?, ?, 'LEASE', ?, ?)
+      `).run(drive_id, fingerprint_hash, email, now + leaseSeconds, Date.now());
 
       logAuthEvent(drive_id, fingerprint_hash, email, 'GRANTED', req);
       console.log(`✅  GRANTED (Direct Access for ${isOwner ? 'Owner' : 'Authorized User'}): Drive ${drive_id} → ${email}`);
@@ -1888,7 +1879,7 @@ app.post('/api/sharing/remove-user', requireAdminKey, (req, res) => {
 
 app.post('/api/mark-lost', requireAdminKey, (req, res) => {
   try {
-    const { drive_id, reason } = req.body;
+    const { drive_id, reason, remove_access_list } = req.body;
     if (!drive_id) {
       return res.status(400).json({ error: 'drive_id is required.' });
     }
@@ -1915,6 +1906,14 @@ app.post('/api/mark-lost', requireAdminKey, (req, res) => {
 
     // Remove all trusted devices
     db.prepare('DELETE FROM trusted_devices WHERE drive_id = ?').run(drive_id);
+
+    // Optionally remove all authorized guest users from the access list (keep owner)
+    if (remove_access_list) {
+      db.prepare(`
+        DELETE FROM access_list WHERE drive_id = ? AND LOWER(TRIM(allowed_email)) != LOWER(TRIM(?))
+      `).run(drive_id, drive.owner_email);
+      console.log(`🧹 Access list cleared for drive ${drive_id} (kept owner ${drive.owner_email})`);
+    }
 
     console.log(`🔴  KILL SWITCH: Drive ${drive_id} marked LOST.`);
 
@@ -2027,14 +2026,13 @@ app.get('/api/dashboard/drives', requireAdminKey, (req, res) => {
         FROM drives ORDER BY created_at DESC
       `).all();
     } else {
-      // Return drives owned by this user OR where user is in access_list
+      // Return ONLY drives owned by this user (not drives where user is merely a guest in access_list)
       drives = db.prepare(`
-        SELECT DISTINCT d.drive_id, d.label, d.owner_email, d.status, d.lost_reason, d.created_at, d.updated_at
+        SELECT d.drive_id, d.label, d.owner_email, d.status, d.lost_reason, d.created_at, d.updated_at
         FROM drives d
-        LEFT JOIN access_list al ON d.drive_id = al.drive_id
-        WHERE d.owner_email = ? OR al.allowed_email = ?
+        WHERE LOWER(TRIM(d.owner_email)) = ?
         ORDER BY d.created_at DESC
-      `).all(ownerEmail.toLowerCase().trim(), ownerEmail.toLowerCase().trim());
+      `).all(ownerEmail.toLowerCase().trim());
     }
 
     const result = drives.map(d => {
