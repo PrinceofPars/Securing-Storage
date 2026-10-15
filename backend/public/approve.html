@@ -347,35 +347,103 @@
       background: rgba(239, 68, 68, 0.2);
     }
 
-    /* Auth prompt */
-    .auth-box {
-      margin-top: 16px;
-      padding-top: 16px;
-      border-top: 1px solid var(--border-subtle);
-    }
-    .auth-box label {
-      display: block;
-      font-size: 11px;
-      color: var(--text-dim);
-      margin-bottom: 6px;
-      font-weight: 500;
-    }
-    .text-field {
-      width: 100%;
-      background: var(--bg-canvas);
+    /* Auth Gate & Verification Styles */
+    .auth-gate-box {
+      background: var(--bg-surface-elev);
       border: 1px solid var(--border-base);
       border-radius: var(--radius-sm);
-      padding: 8px 12px;
-      color: var(--text-main);
-      font-family: var(--font-sans);
-      font-size: 12px;
-      margin-bottom: 12px;
-      outline: none;
-      transition: border-color 0.15s ease;
+      padding: 18px 16px;
+      text-align: center;
+      margin-top: 16px;
+      box-shadow: var(--shadow-sm);
     }
-    .text-field:focus {
-      border-color: var(--accent);
-      background: var(--bg-surface);
+    .auth-gate-box.unauthorized-box {
+      background: rgba(239, 68, 68, 0.05);
+      border-color: rgba(239, 68, 68, 0.25);
+    }
+    .unauth-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--status-err-bg);
+      color: var(--status-err);
+      border: 1px solid var(--status-err-bd);
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+    .btn-google {
+      background: #ffffff !important;
+      color: #1f2937 !important;
+      border: 1px solid #d1d5db !important;
+      font-weight: 600 !important;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      text-decoration: none;
+    }
+    .btn-google:hover:not(:disabled) {
+      background: #f9fafb !important;
+      border-color: #9ca3af !important;
+    }
+    [data-theme="dark"] .btn-google {
+      background: #1e293b !important;
+      color: #f8fafc !important;
+      border-color: rgba(255, 255, 255, 0.15) !important;
+    }
+    [data-theme="dark"] .btn-google:hover:not(:disabled) {
+      background: #273549 !important;
+      border-color: rgba(255, 255, 255, 0.3) !important;
+    }
+    .owner-pill {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      background: var(--status-ok-bg);
+      border: 1px solid var(--status-ok-bd);
+      color: var(--status-ok);
+      padding: 9px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      margin-top: 16px;
+      margin-bottom: 12px;
+    }
+    .owner-pill-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      background: var(--status-ok);
+      color: #ffffff;
+      border-radius: 50%;
+      font-size: 10px;
+      font-weight: 700;
+      margin-right: 8px;
+      flex-shrink: 0;
+    }
+    .switch-link {
+      font-size: 11px;
+      color: var(--accent);
+      text-decoration: underline;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .sign-out-link {
+      font-size: 11px;
+      color: var(--text-dim);
+      text-decoration: none;
+      margin-top: 4px;
+      display: inline-block;
+    }
+    .sign-out-link:hover {
+      color: var(--text-muted);
+      text-decoration: underline;
     }
 
     /* Results */
@@ -508,14 +576,11 @@
           </tbody>
         </table>
 
-        <!-- Owner Auth Section if not signed in -->
-        <div id="authSection" class="auth-box" style="display: none;">
-          <label for="ownerEmailInput">Confirm drive owner identity:</label>
-          <input type="email" id="ownerEmailInput" class="text-field" placeholder="owner@domain.com">
-        </div>
+        <!-- Auth Gate & Verification Notice Section -->
+        <div id="authSection" style="display: none;"></div>
 
         <!-- Action Command Stack -->
-        <div class="action-stack" id="actionButtons">
+        <div class="action-stack" id="actionButtons" style="display: none;">
           <button class="btn-action" onclick="submitDecision('ONE_TIME')">
             Authorize One-Time (12 Hours)
           </button>
@@ -553,6 +618,22 @@
 
     const sunIcon = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/></svg>`;
     const moonIcon = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
+    const googleSvg = `<svg width="18" height="18" viewBox="0 0 24 24" style="flex-shrink:0;">
+      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+    </svg>`;
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
 
     function updateThemeUI(theme) {
       const iconWrap = document.getElementById('themeIconSvg');
@@ -594,7 +675,6 @@
         if (res.ok) {
           const data = await res.json();
           if (data.authenticated && data.owner_email) {
-            document.getElementById('ownerEmailInput').value = data.owner_email;
             return data.owner_email;
           }
         }
@@ -642,31 +722,83 @@
       statusChip.innerText = req.status;
       statusChip.className = 'status-chip ' + (req.status === 'APPROVED' ? 'ok' : req.status === 'DENIED' ? 'err' : 'warn');
 
-      const isOwner = currentAuthUser && currentAuthUser.toLowerCase() === (req.owner_email || '').toLowerCase();
-      const isGuest = currentAuthUser && !isOwner;
+      const actionButtons = document.getElementById('actionButtons');
+      const authSection = document.getElementById('authSection');
+
+      const isOwner = Boolean(currentAuthUser && req.owner_email && currentAuthUser.toLowerCase() === req.owner_email.toLowerCase());
 
       if (req.status !== 'PENDING') {
-        document.getElementById('actionButtons').style.display = 'none';
-        document.getElementById('authSection').style.display = 'none';
-      } else if (isGuest) {
-        document.getElementById('actionButtons').style.display = 'none';
-        document.getElementById('authSection').style.display = 'block';
-        document.getElementById('authSection').innerHTML = `
-          <div style="background: var(--bg-subtle); border: 1px solid var(--border-base); border-radius: var(--radius-sm); padding: 14px; text-align: center;">
-            <div style="font-size: 13px; font-weight: 600; color: var(--text-main); margin-bottom: 4px;">Authorization Pending</div>
+        actionButtons.style.display = 'none';
+        authSection.style.display = 'block';
+        authSection.innerHTML = `
+          <div class="auth-gate-box">
+            <div style="font-size: 13px; font-weight: 600; color: var(--text-main); margin-bottom: 4px;">Request ${req.status}</div>
             <div style="font-size: 12px; color: var(--text-muted); line-height: 1.4;">
-              Signed in as <strong>${currentAuthUser}</strong>.<br>
-              Awaiting owner confirmation from <strong>${req.owner_email}</strong>.
+              This host access request has already been ${req.status.toLowerCase()}. No further decisions can be made.
             </div>
           </div>
         `;
+      } else if (!currentAuthUser) {
+        // Condition 1: Not signed in at all - Prompt Google OAuth first
+        actionButtons.style.display = 'none';
+        authSection.style.display = 'block';
+        authSection.innerHTML = `
+          <div class="auth-gate-box">
+            <div style="font-size: 13px; font-weight: 600; color: var(--text-main); margin-bottom: 6px;">
+              Owner Verification Required
+            </div>
+            <div style="font-size: 12px; color: var(--text-muted); line-height: 1.45; margin-bottom: 16px;">
+              To review and authorize this host access request, continue with Google using the vault owner account (<strong>${escapeHtml(req.owner_email)}</strong>).
+            </div>
+            <a href="/auth/google?redirect=${encodeURIComponent('/approve?req=' + currentRequestId)}" class="btn-action btn-google">
+              ${googleSvg}
+              <span>Continue with Google</span>
+            </a>
+          </div>
+        `;
       } else if (!isOwner) {
-        document.getElementById('authSection').style.display = 'block';
-        if (req.owner_email) {
-          document.getElementById('ownerEmailInput').placeholder = req.owner_email;
-        }
+        // Condition 2: Signed in, but NOT the owner (Unauthorized!)
+        actionButtons.style.display = 'none';
+        authSection.style.display = 'block';
+        authSection.innerHTML = `
+          <div class="auth-gate-box unauthorized-box">
+            <div class="unauth-badge">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+              <span>Not Authorized</span>
+            </div>
+            <div style="font-size: 13px; font-weight: 600; color: var(--text-main); margin-bottom: 6px;">
+              Approval Permission Denied
+            </div>
+            <div style="font-size: 12px; color: var(--text-muted); line-height: 1.45; margin-bottom: 16px;">
+              Signed in as <strong>${escapeHtml(currentAuthUser)}</strong>.<br>
+              This Google account is not the drive owner and cannot authorize host key releases. Only the vault owner (<strong>${escapeHtml(req.owner_email)}</strong>) can authorize.
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+              <a href="/auth/google?switch=true&req=${encodeURIComponent(currentRequestId)}" class="btn-action btn-google">
+                ${googleSvg}
+                <span>Switch Account — Google Auth</span>
+              </a>
+              <a href="/auth/logout?redirect=${encodeURIComponent('/approve?req=' + currentRequestId)}" class="sign-out-link">
+                Sign out of current account
+              </a>
+            </div>
+          </div>
+        `;
       } else {
-        document.getElementById('authSection').style.display = 'none';
+        // Condition 3: Signed in AND IS THE OWNER!
+        authSection.style.display = 'block';
+        authSection.innerHTML = `
+          <div class="owner-pill">
+            <div style="display: flex; align-items: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              <span class="owner-pill-icon">✓</span>
+              <span style="font-size: 12px; overflow: hidden; text-overflow: ellipsis;">
+                Signed in as <strong>${escapeHtml(currentAuthUser)}</strong> (Drive Owner)
+              </span>
+            </div>
+            <a href="/auth/google?switch=true&req=${encodeURIComponent(currentRequestId)}" class="switch-link">Switch</a>
+          </div>
+        `;
+        actionButtons.style.display = 'flex';
       }
 
       document.getElementById('loadingState').style.display = 'none';
@@ -674,16 +806,12 @@
     }
 
     async function submitDecision(action, hours) {
-      const emailInput = document.getElementById('ownerEmailInput');
-      const ownerEmail = emailInput ? emailInput.value.trim() : '';
-
       setButtonsLoading(true);
 
       try {
         let endpoint = action === 'DENY' ? '/api/deny-quick' : '/api/approve-quick';
         let body = {
-          request_id: currentRequestId,
-          owner_email: ownerEmail
+          request_id: currentRequestId
         };
 
         if (action !== 'DENY') {
@@ -694,6 +822,7 @@
         const res = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
           body: JSON.stringify(body)
         });
 

@@ -804,7 +804,18 @@ class USBKillswitchApp(ctk.CTk):
                       command=self._open_existing_vault).pack(side="right")
 
     def _confirm_reinitialize(self):
-        if messagebox.askyesno("Re-initialize Vault", "Are you sure you want to re-initialize this drive?\n\nExisting encrypted vault data will be replaced."):
+        if messagebox.askyesno("Re-initialize Vault", "Are you sure you want to re-initialize this drive?\n\nExisting encrypted vault data and temporary session files will be replaced."):
+            if self.session.get('unlocked'):
+                working_dir = self.session.get('working_dir')
+                if working_dir and Path(working_dir).exists():
+                    ce.secure_wipe_temp(Path(working_dir))
+                self.session['unlocked'] = False
+            if self._timer_id:
+                try:
+                    self.after_cancel(self._timer_id)
+                except Exception:
+                    pass
+                self._timer_id = None
             self._show_init_screen()
 
     def _launch_gate_google_auth(self):
@@ -1329,6 +1340,13 @@ class USBKillswitchApp(ctk.CTk):
 
         bottom_inner = ctk.CTkFrame(bottom, fg_color="transparent")
         bottom_inner.pack(fill="both", expand=True, padx=16)
+
+        ctk.CTkButton(bottom_inner, text="Re-initialize Drive", height=22, width=120,
+                      font=ctk.CTkFont(size=10),
+                      fg_color="transparent", border_width=1,
+                      border_color=COLORS['border'], hover_color=COLORS['bg_card_alt'],
+                      text_color=COLORS['text_dim'], corner_radius=4,
+                      command=self._confirm_reinitialize).pack(side="left", padx=(0, 12))
 
         drive_id_short = config.get('drive_id', '?')[:8] if config else '?'
         ctk.CTkLabel(bottom_inner, text=f"Drive ID: {drive_id_short}...",

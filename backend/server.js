@@ -723,10 +723,10 @@ function handleSuccessfulGoogleAuth(req, res, { verifiedEmail, reqId, sessionId,
       `).get(reqId);
 
       if (request) {
-        if (request.owner_email.toLowerCase() !== verifiedEmail) {
+        if (!request.requester_email && request.owner_email.toLowerCase() !== verifiedEmail) {
           db.prepare('UPDATE pending_requests SET requester_email = ? WHERE request_id = ?').run(verifiedEmail, reqId);
           console.log(`🌐 Google Auth: Verified guest ${verifiedEmail} attached to request ${reqId}`);
-        } else {
+        } else if (request.owner_email.toLowerCase() === verifiedEmail) {
           console.log(`👑 Google Auth: Verified owner ${verifiedEmail} logged in for request ${reqId}`);
         }
       }
@@ -745,13 +745,18 @@ app.get('/auth/google', (req, res) => {
   const sessionId = req.query.session_id || '';
   const hintEmail = req.query.email || '';
   const redirectUrl = req.query.redirect || '';
+  const isForce = req.query.force === 'true' || req.query.switch === 'true';
   const ownerEmail = getOwnerEmail(req);
 
-  if (ownerEmail && !sessionId) {
+  if (ownerEmail && !sessionId && !isForce) {
     if (reqId) {
       return res.redirect(`/approve?req=${encodeURIComponent(reqId)}`);
     }
     return res.redirect(redirectUrl || '/dashboard');
+  }
+
+  if (isForce) {
+    res.setHeader('Set-Cookie', 'owner_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax');
   }
 
   const oauthInfo = buildGoogleOAuthUrl(req, { reqId, sessionId, redirectUrl, hintEmail });
@@ -1639,6 +1644,9 @@ app.get('/api/request-info/:request_id', (req, res) => {
       return res.status(404).json({ error: 'Request not found.' });
     }
 
+    const authOwner = getOwnerEmail(req);
+    const isOwner = Boolean(authOwner && request.owner_email && authOwner.toLowerCase() === request.owner_email.toLowerCase());
+
     return res.status(200).json({
       request_id: request.request_id,
       drive_id: request.drive_id,
@@ -1648,7 +1656,11 @@ app.get('/api/request-info/:request_id', (req, res) => {
       fingerprint_preview: request.hardware_fingerprint ? request.hardware_fingerprint.slice(0, 16) + '...' : '',
       status: request.status,
       granted_scope: request.granted_scope,
-      created_at: new Date(request.created_at).toISOString()
+      created_at: new Date(request.created_at).toISOString(),
+      current_user: authOwner || null,
+      is_authenticated: Boolean(authOwner),
+      is_owner: isOwner,
+      can_approve: isOwner
     });
   } catch (err) {
     console.error('Request-info error:', err);
@@ -1658,7 +1670,7 @@ app.get('/api/request-info/:request_id', (req, res) => {
 
 app.post('/api/approve-quick', (req, res) => {
   try {
-    const { request_id, scope, lease_hours, owner_email } = req.body;
+    const { request_id, scope, lease_hours } = req.body;
     if (!request_id || !scope) {
       return res.status(400).json({ error: 'request_id and scope are required.' });
     }
@@ -1681,13 +1693,13 @@ app.post('/api/approve-quick', (req, res) => {
       return res.status(404).json({ error: 'Associated drive not found.' });
     }
 
-    // Verify caller is the owner or admin
-    const authOwner = getOwnerEmail(req) || (owner_email ? owner_email.toLowerCase().trim() : null);
+    // Verify caller is the authenticated owner or admin
+    const authOwner = getOwnerEmail(req);
     const adminKey = req.headers['x-admin-key'];
     const isAdmin = adminKey && adminKey === ADMIN_KEY;
 
-    if (!isAdmin && (!authOwner || authOwner !== drive.owner_email.toLowerCase())) {
-      return res.status(403).json({ error: 'Unauthorised. Only the drive owner can approve this request.' });
+    if (!isAdmin && (!authOwner || authOwner.toLowerCase() !== drive.owner_email.toLowerCase())) {
+      return res.status(403).json({ error: 'Unauthorised. Only the verified drive owner can approve this request.' });
     }
 
     // Calculate lease duration
@@ -1757,7 +1769,7 @@ app.post('/api/approve-quick', (req, res) => {
 
 app.post('/api/deny-quick', (req, res) => {
   try {
-    const { request_id, owner_email } = req.body;
+    const { request_id } = req.body;
     if (!request_id) {
       return res.status(400).json({ error: 'request_id is required.' });
     }
@@ -1775,12 +1787,12 @@ app.post('/api/deny-quick', (req, res) => {
       return res.status(404).json({ error: 'Associated drive not found.' });
     }
 
-    const authOwner = getOwnerEmail(req) || (owner_email ? owner_email.toLowerCase().trim() : null);
+    const authOwner = getOwnerEmail(req);
     const adminKey = req.headers['x-admin-key'];
     const isAdmin = adminKey && adminKey === ADMIN_KEY;
 
-    if (!isAdmin && (!authOwner || authOwner !== drive.owner_email.toLowerCase())) {
-      return res.status(403).json({ error: 'Unauthorised. Only the drive owner can deny this request.' });
+    if (!isAdmin && (!authOwner || authOwner.toLowerCase() !== drive.owner_email.toLowerCase())) {
+      return res.status(403).json({ error: 'Unauthorised. Only the verified drive owner can deny this request.' });
     }
 
     db.prepare(`
@@ -2092,8 +2104,16 @@ app.get('/api/dashboard/pending', requireAdminKey, (req, res) => {
 // ──────────────────────────────────────────────
 
 app.get('/auth/logout', (req, res) => {
-  res.setHeader('Set-Cookie', 'owner_session=; Path=/; Max-Age=0');
-  res.redirect('/auth/google');
+  res.setHeader('Set-Cookie', 'owner_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax');
+  const redirect = req.query.redirect || '';
+  const reqId = req.query.req || '';
+  if (reqId) {
+    return res.redirect(`/auth/google?force=true&req=${encodeURIComponent(reqId)}`);
+  }
+  if (redirect) {
+    return res.redirect(`/auth/google?force=true&redirect=${encodeURIComponent(redirect)}`);
+  }
+  res.redirect('/auth/google?force=true');
 });
 
 // ──────────────────────────────────────────────
