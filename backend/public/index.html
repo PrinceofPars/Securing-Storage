@@ -1325,6 +1325,13 @@
       document.documentElement.setAttribute('data-theme', activeTheme);
       updateThemeUI(activeTheme);
       refreshAll();
+
+      // Automatically sync dashboard every 3 seconds for real-time active session tracking
+      setInterval(() => {
+        if (!document.querySelector('.panel-drawer.open')) {
+          refreshAll();
+        }
+      }, 3000);
     });
   </script>
 </body>

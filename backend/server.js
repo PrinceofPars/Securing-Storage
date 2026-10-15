@@ -1927,7 +1927,7 @@ app.post('/api/mark-lost', requireAdminKey, (req, res) => {
     // Real-Time Killswitch: push SSE KILL event to any live connected client sessions immediately
     let killedCount = 0;
     for (const [sid, session] of activeSessions.entries()) {
-      if (session.drive_id === drive_id) {
+      if (String(session.drive_id).toLowerCase().trim() === String(drive_id).toLowerCase().trim()) {
         console.log(`📡 Pushing instant SSE KILL event to session ${sid} (${session.user_email})...`);
         try {
           session.res.write(`data: ${JSON.stringify({
@@ -2179,7 +2179,7 @@ app.get('/api/dashboard/drives', requireAdminKey, (req, res) => {
       // Collect live active sessions for this drive
       const liveSessions = [];
       for (const s of activeSessions.values()) {
-        if (s.drive_id === d.drive_id) {
+        if (String(s.drive_id).toLowerCase().trim() === String(d.drive_id).toLowerCase().trim()) {
           liveSessions.push({
             session_id:           s.session_id,
             user_email:           s.user_email,

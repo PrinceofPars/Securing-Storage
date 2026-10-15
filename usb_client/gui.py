@@ -1242,6 +1242,7 @@ class USBKillswitchApp(ctk.CTk):
 
     def _show_workspace_screen(self):
         self._clear_window()
+        self._start_sse_listener()
         config = load_config()
         manifest = self.session.get('manifest', {})
         raw_files = manifest.get('files', [])
@@ -1693,9 +1694,9 @@ class USBKillswitchApp(ctk.CTk):
 
     def _start_sse_listener(self):
         """Start real-time Server-Sent Events listener thread for remote killswitch."""
+        self._sse_stop.clear()
         if self._sse_thread and self._sse_thread.is_alive():
             return
-        self._sse_stop.clear()
         self._sse_thread = threading.Thread(target=self._sse_listener_worker, daemon=True)
         self._sse_thread.start()
 
@@ -1782,7 +1783,7 @@ class USBKillswitchApp(ctk.CTk):
         4. Zero cryptographic session keys in memory
         5. Switch GUI to red Remote Killswitch active gate
         """
-        if not self.session.get('unlocked') and not hasattr(self, 'ws_container'):
+        if not self.session.get('unlocked'):
             return
 
         logger.critical(f"Executing emergency killswitch abort: {reason}")
@@ -1821,6 +1822,7 @@ class USBKillswitchApp(ctk.CTk):
         }
 
         # 5. Display red killswitch gate screen
+        self._focus_window()
         self._show_unlock_screen()
         self._on_unlock_failed(f"REMOTE KILLSWITCH ACTIVE: Storage access permanently revoked ({reason}). Temporary files discarded.")
         try:
@@ -1906,7 +1908,6 @@ class USBKillswitchApp(ctk.CTk):
 
     def _clear_window(self):
         self._poll_stop.set()
-        self._sse_stop.set()
         if self._timer_id:
             self.after_cancel(self._timer_id)
             self._timer_id = None
