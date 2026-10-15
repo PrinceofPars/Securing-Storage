@@ -325,8 +325,20 @@ class USBKillswitchApp(ctk.CTk):
             fp_hash = fp_module.generate_fingerprint()
             self._current_fingerprint = fp_hash
             drive_id = config.get('drive_id', '')
+            api_url = get_api_url(config)
 
-            # 1. Check local offline lease first (offline or online)
+            # Step 1: If network is available, check with server if the drive has been revoked/marked LOST.
+            # If network is NOT available, skip this probe to preserve offline access.
+            if lm.check_internet_connectivity():
+                is_online, is_revoked, rev_reason = lm.check_drive_revocation(
+                    api_url, drive_id, lease_path=LEASE_FILE, vault_path=VAULT_FILE
+                )
+                if is_online and is_revoked:
+                    logger.warning(f"Drive {drive_id} marked as revoked/LOST on server: {rev_reason}. Offline lease purged.")
+                    lm.clear_lease_token(lease_path=LEASE_FILE, vault_path=VAULT_FILE)
+                    return False
+
+            # Step 2: Check local offline lease (allowed both offline and when online & not revoked)
             lease = lm.load_lease_token(LEASE_FILE, k_local, drive_id, vault_path=VAULT_FILE)
             if lease:
                 now = int(time.time())
@@ -342,8 +354,7 @@ class USBKillswitchApp(ctk.CTk):
                     ))
                     return True
 
-            # 2. Check if online and this hardware fingerprint is already trusted on server
-            api_url = get_api_url(config)
+            # Step 3: Check if online and this hardware fingerprint is already trusted on server
             owner_email = config.get('owner_email') or config.get('user_email')
             if owner_email and lm.check_internet_connectivity():
                 try:
@@ -897,6 +908,7 @@ class USBKillswitchApp(ctk.CTk):
                         request_id, config, k_local, fp, email))
 
                 elif result == 'LOCKED':
+                    lm.clear_lease_token(lease_path=LEASE_FILE, vault_path=VAULT_FILE)
                     self.after(0, lambda: self._on_unlock_failed("REMOTE KILLSWITCH ACTIVE: Storage access permanently revoked."))
 
                 elif result == 'DENIED':

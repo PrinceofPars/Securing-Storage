@@ -322,14 +322,17 @@ def online_auth(
             message = data.get('message', 'Access denied.')
             logger.warning(f"Online auth DENIED: {status} — {message}")
             if status == 'LOCKED':
+                clear_lease_token(lease_path=lease_path, vault_path=vault_path)
                 return 'LOCKED', None, message, None
             return 'DENIED', None, message, None
 
         elif response.status_code == 404:
+            clear_lease_token(lease_path=lease_path, vault_path=vault_path)
             return 'ERROR', None, 'Drive ID not registered on server.', None
 
         else:
-            return 'ERROR', None, f"Server returned {response.status_code}", None
+            err_msg = data.get('error') or data.get('message') or f"Server returned {response.status_code}"
+            return 'ERROR', None, err_msg, None
 
     except requests.exceptions.ConnectionError:
         return 'ERROR', None, f"Cannot connect to server at {api_base_url}", None
@@ -337,6 +340,45 @@ def online_auth(
         return 'ERROR', None, "Server request timed out.", None
     except Exception as e:
         return 'ERROR', None, f"Authentication error: {e}", None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Check Drive Revocation / Killswitch
+# ──────────────────────────────────────────────────────────────────────────────
+
+def check_drive_revocation(
+    api_base_url: str,
+    drive_id: str,
+    lease_path: Optional[Path] = None,
+    vault_path: Optional[Path] = None,
+    timeout: int = 5
+) -> Tuple[bool, bool, Optional[str]]:
+    """
+    Check if the drive is marked as LOST or revoked on the server.
+    Returns:
+        (is_online, is_revoked, reason)
+    """
+    if not check_internet_connectivity():
+        return False, False, None
+
+    url = f"{api_base_url.rstrip('/')}/api/drive-status/{drive_id}"
+    try:
+        r = requests.get(url, timeout=timeout)
+        if r.status_code == 200:
+            data = r.json()
+            status = data.get('status', 'ACTIVE')
+            if status == 'LOST':
+                reason = data.get('lost_reason') or 'Drive marked as lost/revoked by owner.'
+                clear_lease_token(lease_path=lease_path, vault_path=vault_path)
+                return True, True, reason
+            return True, False, None
+        elif r.status_code == 404:
+            clear_lease_token(lease_path=lease_path, vault_path=vault_path)
+            return True, True, "Drive ID is not registered on the security server."
+    except Exception as e:
+        logger.debug(f"Drive revocation check error: {e}")
+
+    return False, False, None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -496,11 +538,20 @@ def authenticate(
         elif result == 'PENDING':
             return 'PENDING', None, message, True, request_id
         elif result == 'LOCKED':
+            clear_lease_token(lease_path=lease_path, vault_path=vault_path)
             return 'LOCKED', None, message, True, None
         elif result == 'DENIED':
             return 'DENIED', None, message, True, None
         else:
-            # Network error during online attempt — try offline
+            # Network error during online attempt — verify if drive was revoked
+            is_net, is_rev, rev_msg = check_drive_revocation(
+                api_base_url, drive_id, lease_path=lease_path, vault_path=vault_path
+            )
+            if is_net and is_rev:
+                clear_lease_token(lease_path=lease_path, vault_path=vault_path)
+                return 'LOCKED', None, f"Drive revoked on server: {rev_msg}", True, None
+
+            # Try offline lease
             logger.info(f"Online auth failed ({message}), trying offline lease...")
             success, cks, offline_msg = offline_lease_check(
                 lease_path, k_local, drive_id, fingerprint_hash, vault_path=vault_path

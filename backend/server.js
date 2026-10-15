@@ -1303,21 +1303,12 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
       const lease = generateLeaseToken(drive_id, fingerprint_hash, leaseSeconds);
 
       // Auto-register device as trusted for this authorized user so future sessions on this machine are trusted
-      const existingDevice = db.prepare(
-        'SELECT id FROM trusted_devices WHERE drive_id = ? AND hardware_fingerprint = ?'
-      ).get(drive_id, fingerprint_hash);
-
       const now = Math.floor(Date.now() / 1000);
-      if (!existingDevice) {
-        db.prepare(`
-          INSERT INTO trusted_devices (drive_id, hardware_fingerprint, trust_scope, registered_at, expires_at)
-          VALUES (?, ?, 'LEASE', ?, ?)
-        `).run(drive_id, fingerprint_hash, now, now + leaseSeconds);
-      } else {
-        db.prepare(`
-          UPDATE trusted_devices SET expires_at = ? WHERE id = ?
-        `).run(now + leaseSeconds, existingDevice.id);
-      }
+      db.prepare(`
+        INSERT OR REPLACE INTO trusted_devices
+          (drive_id, hardware_fingerprint, user_email, trust_scope, expires_at, created_at)
+        VALUES (?, ?, ?, 'LEASE', ?, ?)
+      `).run(drive_id, fingerprint_hash, email, now + leaseSeconds, Date.now());
 
       logAuthEvent(drive_id, fingerprint_hash, email, 'GRANTED', req);
       console.log(`✅  GRANTED (Direct Access for ${isOwner ? 'Owner' : 'Authorized User'}): Drive ${drive_id} → ${email}`);
@@ -1963,7 +1954,7 @@ app.post('/api/reactivate', requireAdminKey, (req, res) => {
 // Route: GET /api/status/:drive_id
 // ──────────────────────────────────────────────
 
-app.get('/api/status/:drive_id', (req, res) => {
+app.get(['/api/status/:drive_id', '/api/drive-status/:drive_id'], (req, res) => {
   try {
     const { drive_id } = req.params;
     const drive = db.prepare(`
@@ -1971,7 +1962,7 @@ app.get('/api/status/:drive_id', (req, res) => {
       FROM drives WHERE drive_id = ?
     `).get(drive_id);
 
-    if (!drive) return res.status(404).json({ error: 'Drive not found.' });
+    if (!drive) return res.status(404).json({ error: 'Drive not found.', status: 'NOT_FOUND', is_revoked: false });
 
     const accessList = db.prepare(
       'SELECT allowed_email, added_at FROM access_list WHERE drive_id = ?'
