@@ -1279,53 +1279,7 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
     }
 
     // ──────────────────────────────────────────────
-    // Filter Level 1: Verify Google Account Identity & Authorization
-    // ──────────────────────────────────────────────
-    if (!email) {
-      logAuthEvent(drive_id, fingerprint_hash, '', 'DENIED_NO_EMAIL', req);
-      return res.status(403).json({
-        status:  'DENIED',
-        message: 'Google identity required. Please verify your email via Sign in with Google.'
-      });
-    }
-
-    // ──────────────────────────────────────────────
-    // 1. Direct Access: If email is owner or in access list, directly grant access
-    // ──────────────────────────────────────────────
-    const isOwner = (email === drive.owner_email.toLowerCase());
-    const accessEntry = db.prepare(
-      'SELECT allowed_email FROM access_list WHERE drive_id = ? AND allowed_email = ?'
-    ).get(drive_id, email);
-    const isAllowedUser = Boolean(accessEntry);
-
-    if (isOwner || isAllowedUser) {
-      const leaseSeconds = LEASE_DAYS * 24 * 60 * 60;
-      const lease = generateLeaseToken(drive_id, fingerprint_hash, leaseSeconds);
-
-      // Auto-register device as trusted for this authorized user so future sessions on this machine are trusted
-      const now = Math.floor(Date.now() / 1000);
-      db.prepare(`
-        INSERT OR REPLACE INTO trusted_devices
-          (drive_id, hardware_fingerprint, user_email, trust_scope, expires_at, created_at)
-        VALUES (?, ?, ?, 'LEASE', ?, ?)
-      `).run(drive_id, fingerprint_hash, email, now + leaseSeconds, Date.now());
-
-      logAuthEvent(drive_id, fingerprint_hash, email, 'GRANTED', req);
-      console.log(`✅  GRANTED (Direct Access for ${isOwner ? 'Owner' : 'Authorized User'}): Drive ${drive_id} → ${email}`);
-
-      return res.status(200).json({
-        status:          'GRANTED',
-        cloud_key_share: drive.cloud_key_share,
-        lease_token:     lease.token,
-        expires_at:      lease.expiresAtISO,
-        expires_at_unix: lease.expiresAt,
-        drive_label:     drive.label,
-        trust_scope:     'LEASE'
-      });
-    }
-
-    // ──────────────────────────────────────────────
-    // 2. Check if this hardware was already authorized by owner
+    // 1. Hardware Fingerprint Trust Verification (Known Devices)
     // ──────────────────────────────────────────────
     const trustedDevice = db.prepare(
       'SELECT * FROM trusted_devices WHERE drive_id = ? AND hardware_fingerprint = ?'
@@ -1343,7 +1297,7 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
 
         const leaseSeconds = 12 * 60 * 60;
         const lease = generateLeaseToken(drive_id, fingerprint_hash, leaseSeconds);
-        logAuthEvent(drive_id, fingerprint_hash, email, 'GRANTED_ONETIME', req);
+        logAuthEvent(drive_id, fingerprint_hash, trustedDevice.user_email || email, 'GRANTED_ONETIME', req);
 
         return res.status(200).json({
           status:          'GRANTED',
@@ -1357,10 +1311,11 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
       } else {
         let leaseSeconds = trustedDevice.trust_scope === 'FOREVER'
           ? LEASE_DAYS * 24 * 60 * 60
-          : Math.max(trustedDevice.expires_at - now, 3600);
+          : Math.max((trustedDevice.expires_at || (now + 86400)) - now, 3600);
 
         const lease = generateLeaseToken(drive_id, fingerprint_hash, leaseSeconds);
-        logAuthEvent(drive_id, fingerprint_hash, email, 'GRANTED', req);
+        logAuthEvent(drive_id, fingerprint_hash, trustedDevice.user_email || email, 'GRANTED', req);
+        console.log(`✅  GRANTED (Trusted Hardware): Drive ${drive_id} → Host ${fingerprint_hash.slice(0, 16)}...`);
 
         return res.status(200).json({
           status:          'GRANTED',
@@ -1375,7 +1330,53 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
     }
 
     // ──────────────────────────────────────────────
-    // 3. Unauthorized User: Route to out-of-band approval screen
+    // 2. Hardware Mismatch / Untrusted Device
+    // ──────────────────────────────────────────────
+    if (!email) {
+      logAuthEvent(drive_id, fingerprint_hash, '', 'HARDWARE_MISMATCH', req);
+      return res.status(403).json({
+        status:  'HARDWARE_MISMATCH',
+        message: 'Hardware fingerprint mismatch. Authentication via Continue with Google required.'
+      });
+    }
+
+    // ──────────────────────────────────────────────
+    // 3. User Provided Google Email: Check Access Rights
+    // ──────────────────────────────────────────────
+    const isOwner = (email === drive.owner_email.toLowerCase());
+    const accessEntry = db.prepare(
+      'SELECT allowed_email FROM access_list WHERE drive_id = ? AND allowed_email = ?'
+    ).get(drive_id, email);
+    const isAllowedUser = Boolean(accessEntry);
+
+    if (isOwner || isAllowedUser) {
+      const leaseSeconds = LEASE_DAYS * 24 * 60 * 60;
+      const lease = generateLeaseToken(drive_id, fingerprint_hash, leaseSeconds);
+      const now = Math.floor(Date.now() / 1000);
+
+      // Register this newly verified device as trusted for this authorized user
+      db.prepare(`
+        INSERT OR REPLACE INTO trusted_devices
+          (drive_id, hardware_fingerprint, user_email, trust_scope, expires_at, created_at)
+        VALUES (?, ?, ?, 'LEASE', ?, ?)
+      `).run(drive_id, fingerprint_hash, email, now + leaseSeconds, Date.now());
+
+      logAuthEvent(drive_id, fingerprint_hash, email, 'GRANTED_VERIFIED_USER', req);
+      console.log(`✅  GRANTED (Verified User for ${isOwner ? 'Owner' : 'Authorized User'}): Drive ${drive_id} → ${email}`);
+
+      return res.status(200).json({
+        status:          'GRANTED',
+        cloud_key_share: drive.cloud_key_share,
+        lease_token:     lease.token,
+        expires_at:      lease.expiresAtISO,
+        expires_at_unix: lease.expiresAt,
+        drive_label:     drive.label,
+        trust_scope:     'LEASE'
+      });
+    }
+
+    // ──────────────────────────────────────────────
+    // 4. Unauthorized User: Route to out-of-band approval screen
     // ──────────────────────────────────────────────
     console.log(`⏳ Unauthorized user ${email} on device ${fingerprint_hash}. Routing to out-of-band approval...`);
 

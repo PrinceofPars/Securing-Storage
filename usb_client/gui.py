@@ -357,11 +357,10 @@ class USBKillswitchApp(ctk.CTk):
                     return True
 
             # Step 3: Check if online and this hardware fingerprint is already trusted on server
-            owner_email = config.get('owner_email') or config.get('user_email')
-            if owner_email and lm.check_internet_connectivity():
+            if lm.check_internet_connectivity():
                 try:
                     res, cks, msg, req_id = lm.online_auth(
-                        api_url, drive_id, fp_hash, owner_email, k_local,
+                        api_url, drive_id, fp_hash, '', k_local,
                         lease_path=LEASE_FILE, vault_path=VAULT_FILE
                     )
                     if res == 'GRANTED' and cks:
