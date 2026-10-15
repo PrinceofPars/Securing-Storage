@@ -27,6 +27,10 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import uuid
+import socket
+import getpass
+import requests
 from pathlib import Path
 from tkinter import filedialog, messagebox
 import tkinter.ttk as ttk
@@ -239,10 +243,15 @@ class USBKillswitchApp(ctk.CTk):
             'is_full_extract': False,
             'unlock_time':     None,
             'request_id':      None,
+            'session_id':      None,
+            'user_email':      None,
         }
         self._poll_thread = None
         self._poll_stop   = threading.Event()
+        self._sse_thread  = None
+        self._sse_stop    = threading.Event()
         self._timer_id    = None
+        self._current_user_email  = ''
         self._current_fingerprint = fp_module.generate_fingerprint()
 
         # Route initial view
@@ -350,9 +359,11 @@ class USBKillswitchApp(ctk.CTk):
 
                 if cks and now < expires_at and fp_hash.lower() == lease_fp.lower():
                     logger.info("Valid offline lease active for this host. Directly opening workspace.")
+                    self._current_user_email = lease.get('user_email', '')
                     self._show_splash_screen("Authorizing hardware identity...")
                     self.after(50, lambda: self._load_vault_workspace(
-                        k_local, cks, "Offline Lease", "Authorized offline session active"
+                        k_local, cks, "Offline Lease", "Authorized offline session active",
+                        user_email=self._current_user_email
                     ))
                     return True
 
@@ -365,9 +376,13 @@ class USBKillswitchApp(ctk.CTk):
                     )
                     if res == 'GRANTED' and cks:
                         logger.info("Hardware fingerprint verified via online trusted device. Directly opening workspace.")
+                        lease_now = lm.load_lease_token(LEASE_FILE, k_local, drive_id, vault_path=VAULT_FILE)
+                        user_email = (lease_now.get('user_email') if lease_now else '') or config.get('owner_email', '')
+                        self._current_user_email = user_email
                         self._show_splash_screen("Hardware identity verified...")
                         self.after(50, lambda: self._load_vault_workspace(
-                            k_local, cks, "Online Verified", "Hardware identity verified"
+                            k_local, cks, "Online Verified", "Hardware identity verified",
+                            user_email=user_email
                         ))
                         return True
                 except Exception as oe:
@@ -901,10 +916,12 @@ class USBKillswitchApp(ctk.CTk):
                 if result in ('GRANTED', 'OFFLINE_GRANTED'):
                     self.session['cloud_key_share'] = cks
                     self.session['k_local'] = k_local
+                    self._current_user_email = email
                     mode = "Online Verified" if was_online else "Offline Lease"
-                    self.after(0, lambda: self._load_vault_workspace(k_local, cks, mode, msg))
+                    self.after(0, lambda: self._load_vault_workspace(k_local, cks, mode, msg, user_email=email))
 
                 elif result == 'PENDING':
+                    self._current_user_email = email
                     self.after(0, lambda: self._show_waiting_screen(
                         request_id, config, k_local, fp, email))
 
@@ -930,7 +947,7 @@ class USBKillswitchApp(ctk.CTk):
         if hasattr(self, 'unlock_status') and self.unlock_status.winfo_exists():
             self.unlock_status.configure(text=msg, text_color=COLORS['danger'])
 
-    def _load_vault_workspace(self, k_local, cloud_key_hex, mode, msg):
+    def _load_vault_workspace(self, k_local, cloud_key_hex, mode, msg, user_email=''):
         def _set_status(txt, color):
             if hasattr(self, 'wait_status') and self.wait_status.winfo_exists():
                 self.wait_status.configure(text=txt, text_color=color)
@@ -964,6 +981,17 @@ class USBKillswitchApp(ctk.CTk):
 
                 work_dir = Path(tempfile.mkdtemp(prefix='zerotrust_session_'))
 
+                # Resolve active user email
+                resolved_email = (user_email or getattr(self, '_current_user_email', '')).strip()
+                if not resolved_email:
+                    cfg = load_config()
+                    if cfg:
+                        lease_info = lm.load_lease_token(LEASE_FILE, k_local, cfg.get('drive_id', ''), vault_path=VAULT_FILE)
+                        if lease_info and lease_info.get('user_email'):
+                            resolved_email = lease_info.get('user_email').strip()
+                        elif cfg.get('owner_email'):
+                            resolved_email = cfg.get('owner_email').strip()
+
                 self.session['unlocked']        = True
                 self.session['manifest']        = manifest
                 self.session['k_local']         = k_local
@@ -972,6 +1000,11 @@ class USBKillswitchApp(ctk.CTk):
                 self.session['working_dir']     = work_dir
                 self.session['opened_files']    = {}
                 self.session['is_full_extract'] = False
+                self.session['session_id']      = str(uuid.uuid4())
+                self.session['user_email']      = resolved_email or 'anonymous@user'
+
+                # Start real-time SSE listener in background (Option A)
+                self._start_sse_listener()
 
                 self.after(0, lambda: self._show_workspace_screen())
 
@@ -1194,7 +1227,8 @@ class USBKillswitchApp(ctk.CTk):
         self.wait_progress.stop()
         self.wait_status.configure(text=f"Authorization granted: {msg}", text_color=COLORS['success'])
         self.update_idletasks()
-        self.after(400, lambda: self._load_vault_workspace(k_local, cloud_key_hex, "Authorized", msg))
+        email = getattr(self, '_current_user_email', '')
+        self.after(400, lambda: self._load_vault_workspace(k_local, cloud_key_hex, "Authorized", msg, user_email=email))
 
     def _on_approval_denied(self):
         self._focus_window()
@@ -1598,11 +1632,26 @@ class USBKillswitchApp(ctk.CTk):
         cloud_key_hex = self.session.get('cloud_key_share')
         is_full = self.session.get('is_full_extract', False)
 
-        self.ws_status_text.configure(text="PACKAGING & LOCKING...", text_color=COLORS['warning'])
+        self.ws_status_text.configure(text="CHECKING SECURITY & PACKAGING...", text_color=COLORS['warning'])
         self.update_idletasks()
 
         def do_save():
             try:
+                # Pre-commit revocation check if online:
+                # If network is available, check GET /api/status/:drive_id before committing changes.
+                # If marked as lost on server, discard changes, shred temp files, and trigger killswitch!
+                config = load_config()
+                if config and lm.check_internet_connectivity():
+                    api_url = get_api_url(config)
+                    drive_id = config.get('drive_id', '')
+                    is_online, is_revoked, rev_reason = lm.check_drive_revocation(
+                        api_url, drive_id, lease_path=LEASE_FILE, vault_path=VAULT_FILE
+                    )
+                    if is_online and is_revoked:
+                        logger.warning(f"Pre-commit guard: Drive {drive_id} revoked on server ({rev_reason}). Discarding changes and wiping session.")
+                        self.after(0, lambda: self._emergency_killswitch_abort(f"Drive revoked on server: {rev_reason}"))
+                        return
+
                 k_cloud = ce.hex_to_key_bytes(cloud_key_hex)
 
                 if working_dir and Path(working_dir).exists() and manifest:
@@ -1642,11 +1691,171 @@ class USBKillswitchApp(ctk.CTk):
 
         threading.Thread(target=do_wipe, daemon=True).start()
 
-    def _lock_cleanup_and_exit(self):
+    def _start_sse_listener(self):
+        """Start real-time Server-Sent Events listener thread for remote killswitch."""
+        if self._sse_thread and self._sse_thread.is_alive():
+            return
+        self._sse_stop.clear()
+        self._sse_thread = threading.Thread(target=self._sse_listener_worker, daemon=True)
+        self._sse_thread.start()
+
+    def _sse_listener_worker(self):
+        """Worker thread that maintains a persistent SSE stream to the server (Option A)."""
+        config = load_config()
+        if not config:
+            return
+        api_url = get_api_url(config)
+        drive_id = config.get('drive_id', '')
+        if not api_url or not drive_id:
+            return
+
+        session_id = self.session.get('session_id') or str(uuid.uuid4())
+        user_email = self.session.get('user_email') or ''
+        fp_hash = getattr(self, '_current_fingerprint', '') or fp_module.generate_fingerprint()
+
+        try:
+            hostname = socket.gethostname()
+        except Exception:
+            hostname = 'unknown-host'
+
+        try:
+            os_user = getpass.getuser()
+        except Exception:
+            os_user = ''
+
+        sse_url = f"{api_url.rstrip('/')}/api/drive-events/{drive_id}"
+        params = {
+            'session_id': session_id,
+            'user_email': user_email,
+            'hardware_fingerprint': fp_hash,
+            'hostname': hostname,
+            'os_user': os_user
+        }
+
+        # Option A: Pure SSE with no fallback polling.
+        while not self._sse_stop.is_set() and self.session.get('unlocked'):
+            try:
+                with requests.get(sse_url, params=params, stream=True, timeout=(10, 60)) as r:
+                    if r.status_code == 200:
+                        logger.info(f"SSE killswitch listener connected (Session: {session_id[:8]}…, User: {user_email})")
+                        for line in r.iter_lines(decode_unicode=True):
+                            if self._sse_stop.is_set() or not self.session.get('unlocked'):
+                                break
+                            if not line:
+                                continue
+                            line = line.strip()
+                            if line.startswith('data:'):
+                                data_str = line[5:].strip()
+                                try:
+                                    payload = json.loads(data_str)
+                                    ev_type = payload.get('type')
+                                    if ev_type == 'KILL':
+                                        reason = payload.get('reason', 'Access revoked by owner.')
+                                        logger.warning(f"🚨 REAL-TIME REMOTE KILLSWITCH RECEIVED: {reason}")
+                                        self.after(0, lambda r_msg=reason: self._emergency_killswitch_abort(r_msg))
+                                        return
+                                    elif ev_type == 'CONNECTED':
+                                        logger.debug(f"SSE stream handshake confirmed for drive {drive_id}")
+                                except Exception as pe:
+                                    logger.debug(f"SSE parse warning: {pe}")
+                    elif r.status_code == 403:
+                        logger.warning("SSE returned 403: Storage access is revoked on server.")
+                        self.after(0, lambda: self._emergency_killswitch_abort("Storage access revoked on server."))
+                        return
+                    else:
+                        logger.debug(f"SSE response status: {r.status_code}")
+            except Exception as e:
+                logger.debug(f"SSE connection blip: {e}")
+
+            # Reconnection backoff wait while session remains active
+            for _ in range(5):
+                if self._sse_stop.is_set() or not self.session.get('unlocked'):
+                    return
+                time.sleep(1)
+
+    def _emergency_killswitch_abort(self, reason: str = "Access revoked by owner."):
+        """
+        Instant rollback & emergency wipe on remote killswitch:
+        1. Stop SSE listener & session timer
+        2. Discard modified files & securely shred temporary directory
+        3. Clear offline lease token (both vault header and file)
+        4. Zero cryptographic session keys in memory
+        5. Switch GUI to red Remote Killswitch active gate
+        """
+        if not self.session.get('unlocked') and not hasattr(self, 'ws_container'):
+            return
+
+        logger.critical(f"Executing emergency killswitch abort: {reason}")
+
+        # 1. Stop background threads & timer
+        self._sse_stop.set()
+        if self._timer_id:
+            try:
+                self.after_cancel(self._timer_id)
+            except Exception:
+                pass
+            self._timer_id = None
+
+        # 2. Securely shred temporary session directory
+        working_dir = self.session.get('working_dir')
+        if working_dir and Path(working_dir).exists():
+            try:
+                ce.secure_wipe_temp(Path(working_dir))
+                logger.info("Emergency wipe: temporary session directory shredded.")
+            except Exception as we:
+                logger.error(f"Error shredding session dir: {we}")
+
+        # 3. Purge offline lease
+        try:
+            lm.clear_lease_token(lease_path=LEASE_FILE, vault_path=VAULT_FILE)
+            logger.info("Emergency wipe: offline lease purged.")
+        except Exception as le:
+            logger.error(f"Error purging lease: {le}")
+
+        # 4. Wipe session memory
         self.session = {
             'unlocked': False, 'manifest': None, 'k_local': None,
             'cloud_key_share': None, 'working_dir': None, 'opened_files': {},
-            'is_full_extract': False, 'unlock_time': None, 'request_id': None
+            'is_full_extract': False, 'unlock_time': None, 'request_id': None,
+            'session_id': None, 'user_email': None
+        }
+
+        # 5. Display red killswitch gate screen
+        self._show_unlock_screen()
+        self._on_unlock_failed(f"REMOTE KILLSWITCH ACTIVE: Storage access permanently revoked ({reason}). Temporary files discarded.")
+        try:
+            messagebox.showerror(
+                "Remote Killswitch Active",
+                f"Storage access has been revoked by the owner.\n\n"
+                f"Reason: {reason}\n\n"
+                f"• Session has been terminated immediately.\n"
+                f"• Working files in this session were discarded and shredded.\n"
+                f"• Offline cryptographic lease has been purged."
+            )
+        except Exception:
+            pass
+
+    def _lock_cleanup_and_exit(self):
+        self._sse_stop.set()
+        session_id = self.session.get('session_id')
+        config = load_config()
+        if session_id and config:
+            drive_id = config.get('drive_id', '')
+            api_url = get_api_url(config)
+            def notify_end():
+                try:
+                    requests.post(f"{api_url.rstrip('/')}/api/session/end",
+                                  json={'drive_id': drive_id, 'session_id': session_id},
+                                  timeout=2)
+                except Exception:
+                    pass
+            threading.Thread(target=notify_end, daemon=True).start()
+
+        self.session = {
+            'unlocked': False, 'manifest': None, 'k_local': None,
+            'cloud_key_share': None, 'working_dir': None, 'opened_files': {},
+            'is_full_extract': False, 'unlock_time': None, 'request_id': None,
+            'session_id': None, 'user_email': None
         }
         if self._timer_id:
             try:
@@ -1697,6 +1906,7 @@ class USBKillswitchApp(ctk.CTk):
 
     def _clear_window(self):
         self._poll_stop.set()
+        self._sse_stop.set()
         if self._timer_id:
             self.after_cancel(self._timer_id)
             self._timer_id = None
@@ -1705,7 +1915,19 @@ class USBKillswitchApp(ctk.CTk):
 
     def _on_close(self):
         self._poll_stop.set()
+        self._sse_stop.set()
         if self.session.get('unlocked'):
+            session_id = self.session.get('session_id')
+            config = load_config()
+            if session_id and config:
+                drive_id = config.get('drive_id', '')
+                api_url = get_api_url(config)
+                try:
+                    requests.post(f"{api_url.rstrip('/')}/api/session/end",
+                                  json={'drive_id': drive_id, 'session_id': session_id},
+                                  timeout=1.5)
+                except Exception:
+                    pass
             working_dir = self.session.get('working_dir')
             if working_dir and Path(working_dir).exists():
                 ce.secure_wipe_temp(Path(working_dir))

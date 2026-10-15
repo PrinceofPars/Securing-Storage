@@ -295,6 +295,8 @@ def online_auth(
             expires_at_unix = data.get('expires_at_unix', int(time.time()) + 7 * 86400)
             issued_at       = int(time.time())
 
+            resolved_email  = (data.get('user_email') or user_email or '').strip()
+
             save_lease_token(
                 lease_path       = lease_path,
                 k_local          = k_local,
@@ -304,7 +306,7 @@ def online_auth(
                 jwt_token        = jwt_token,
                 issued_at        = issued_at,
                 expires_at       = expires_at_unix,
-                user_email       = user_email,
+                user_email       = resolved_email,
                 vault_path       = vault_path
             )
 
@@ -420,6 +422,8 @@ def poll_request_status(
             expires_at_unix = data.get('expires_at_unix', int(time.time()) + 7 * 86400)
             scope           = data.get('granted_scope', 'CUSTOM_LEASE')
 
+            resolved_email = (data.get('user_email') or user_email or '').strip()
+
             # Save lease token into vault header (or fallback file)
             if cloud_key_share:
                 save_lease_token(
@@ -431,7 +435,7 @@ def poll_request_status(
                     jwt_token        = jwt_token,
                     issued_at        = int(time.time()),
                     expires_at       = expires_at_unix,
-                    user_email       = user_email,
+                    user_email       = resolved_email,
                     vault_path       = vault_path
                 )
 

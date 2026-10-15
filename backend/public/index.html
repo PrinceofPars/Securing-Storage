@@ -1012,12 +1012,15 @@
         return;
       }
 
-      container.innerHTML = drives.map(d => `
+      container.innerHTML = drives.map(d => {
+        const hasActive = d.active_sessions && d.active_sessions.length > 0;
+        return `
         <div class="panel" id="drive-${d.drive_id}">
           <div class="panel-header">
             <div class="panel-title-wrap">
               <span class="panel-title">${d.label || 'Unlabeled Drive'}</span>
               <span class="status-chip ${d.status === 'ACTIVE' ? 'ok' : 'err'}">${d.status}</span>
+              ${hasActive ? `<span class="status-chip ok" style="background:rgba(16,185,129,0.15);border-color:#10b981;color:#10b981;">● IN USE</span>` : ''}
             </div>
             <div class="btn-row" style="margin-top:0">
               ${d.status === 'ACTIVE'
@@ -1034,7 +1037,29 @@
             <div class="spec-item"><span class="spec-k">Authorized Users:</span> <span class="spec-v">${d.access_list_count}</span></div>
             <div class="spec-item"><span class="spec-k">Trusted Hosts:</span> <span class="spec-v">${d.trusted_device_count}</span></div>
             <div class="spec-item"><span class="spec-k">Registered:</span> <span class="spec-v">${timeAgo(d.created_at)}</span></div>
+            <div class="spec-item">
+              <span class="spec-k">Active Session:</span>
+              <span class="spec-v">${hasActive
+                ? `<span style="color:var(--status-ok);font-weight:600">● ${d.active_sessions.length} Online</span>`
+                : `<span style="color:var(--text-dim)">○ Inactive / Idle</span>`
+              }</span>
+            </div>
           </div>
+
+          ${hasActive ? `
+          <div style="margin: 10px 0 12px 0; padding: 10px 14px; background: rgba(16,185,129,0.06); border: 1px solid rgba(16,185,129,0.25); border-radius: 6px;">
+            <div style="font-size: 11px; font-weight: 700; color: #10b981; font-family: var(--font-mono); margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+              <span class="led-dot" style="background:#10b981;box-shadow:0 0 6px #10b981;"></span>
+              LIVE ACTIVE SESSION DETECTED
+            </div>
+            ${d.active_sessions.map(s => `
+              <div style="font-size: 12px; display: flex; flex-direction: column; gap: 3px;">
+                <div><span class="spec-k">Active User:</span> <strong style="color:var(--text-main); font-size:13px">${s.user_email || 'Verified Guest / Host'}</strong></div>
+                <div><span class="spec-k">Host Machine:</span> <span class="code-tag">${s.hostname || 'Host'}</span> ${s.os_user ? `(User: ${s.os_user})` : ''} &bull; <span class="spec-k">IP:</span> ${s.ip}</div>
+                <div><span class="spec-k">Fingerprint:</span> <span class="code-tag">${(s.hardware_fingerprint || '').slice(0, 16)}…</span> &bull; <span class="spec-k">Connected:</span> ${timeAgo(s.connected_at)}</div>
+              </div>
+            `).join('<div style="height:1px;background:rgba(16,185,129,0.2);margin:6px 0;"></div>')}
+          </div>` : ''}
 
           ${d.lost_reason ? `<div style="font-size:12px;color:var(--status-err);margin-bottom:8px">Reason: ${d.lost_reason}</div>` : ''}
 
@@ -1047,7 +1072,8 @@
             </div>
           </div>
         </div>
-      `).join('');
+        `;
+      }).join('');
     }
 
     // ─── Toggle Details ───
@@ -1124,7 +1150,10 @@
           })
         });
         if (status === 200) {
-          showToast(removeUsers ? 'Drive disabled & access list cleared.' : 'Drive disabled. Killswitch active.', 'error');
+          const killedMsg = (data.sessions_terminated && data.sessions_terminated > 0)
+            ? ` Terminated ${data.sessions_terminated} active session(s) in real time.`
+            : '';
+          showToast((removeUsers ? 'Drive disabled & access list cleared.' : 'Drive disabled. Killswitch active.') + killedMsg, 'error');
           refreshAll();
         } else {
           showToast(data.error || 'Command failed', 'error');

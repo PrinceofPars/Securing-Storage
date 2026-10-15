@@ -172,6 +172,10 @@ console.log(`✅  Database initialised at: ${path.resolve(DB_PATH)}`);
 
 const app = express();
 
+// In-memory registry for live active client sessions (Server-Sent Events)
+// Map: session_id -> { res, drive_id, session_id, user_email, hardware_fingerprint, hostname, os_user, ip, connected_at }
+const activeSessions = new Map();
+
 // Configure helmet to allow inline styles and scripts for dashboard
 app.use(helmet({
   contentSecurityPolicy: false,
@@ -1306,7 +1310,8 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
           expires_at:      lease.expiresAtISO,
           expires_at_unix: lease.expiresAt,
           drive_label:     drive.label,
-          trust_scope:     'ONE_TIME'
+          trust_scope:     'ONE_TIME',
+          user_email:      trustedDevice.user_email || email || drive.owner_email
         });
       } else {
         let leaseSeconds = trustedDevice.trust_scope === 'FOREVER'
@@ -1324,7 +1329,8 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
           expires_at:      lease.expiresAtISO,
           expires_at_unix: lease.expiresAt,
           drive_label:     drive.label,
-          trust_scope:     trustedDevice.trust_scope
+          trust_scope:     trustedDevice.trust_scope,
+          user_email:      trustedDevice.user_email || email || drive.owner_email
         });
       }
     }
@@ -1371,7 +1377,8 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
         expires_at:      lease.expiresAtISO,
         expires_at_unix: lease.expiresAt,
         drive_label:     drive.label,
-        trust_scope:     'LEASE'
+        trust_scope:     'LEASE',
+        user_email:      email
       });
     }
 
@@ -1467,6 +1474,7 @@ app.post('/api/request-status', (req, res) => {
         expires_at:      request.expires_at ? new Date(request.expires_at * 1000).toISOString() : null,
         expires_at_unix: request.expires_at,
         granted_scope:   request.granted_scope,
+        user_email:      request.requester_email || '',
         message:         `Access approved with scope: ${request.granted_scope}`
       });
     }
@@ -1916,13 +1924,35 @@ app.post('/api/mark-lost', requireAdminKey, (req, res) => {
       console.log(`🧹 Access list cleared for drive ${drive_id} (kept owner ${drive.owner_email})`);
     }
 
-    console.log(`🔴  KILL SWITCH: Drive ${drive_id} marked LOST.`);
+    // Real-Time Killswitch: push SSE KILL event to any live connected client sessions immediately
+    let killedCount = 0;
+    for (const [sid, session] of activeSessions.entries()) {
+      if (session.drive_id === drive_id) {
+        console.log(`📡 Pushing instant SSE KILL event to session ${sid} (${session.user_email})...`);
+        try {
+          session.res.write(`data: ${JSON.stringify({
+            type: 'KILL',
+            drive_id: drive_id,
+            reason: reason || 'Marked lost by administrator.',
+            timestamp: Date.now()
+          })}\n\n`);
+          session.res.end();
+          killedCount++;
+        } catch (err) {
+          console.error(`Error sending KILL event to session ${sid}:`, err);
+        }
+        activeSessions.delete(sid);
+      }
+    }
+
+    console.log(`🔴  KILL SWITCH: Drive ${drive_id} marked LOST. Pushed killswitch to ${killedCount} active session(s).`);
 
     return res.status(200).json({
       message: 'Drive marked as LOST. All trust revoked.',
       drive_id,
       status:  'LOST',
-      reason:  reason || null
+      reason:  reason || null,
+      sessions_terminated: killedCount
     });
   } catch (err) {
     console.error('Mark-lost error:', err);
@@ -2011,6 +2041,107 @@ app.get('/api/status/:drive_id', (req, res) => {
 });
 
 // ──────────────────────────────────────────────
+// Route: GET /api/drive-events/:drive_id (SSE for Real-Time Killswitch)
+// ──────────────────────────────────────────────
+
+app.get('/api/drive-events/:drive_id', (req, res) => {
+  try {
+    const { drive_id } = req.params;
+    const { session_id, user_email, hardware_fingerprint, hostname, os_user } = req.query;
+
+    const drive = db.prepare('SELECT drive_id, status, lost_reason FROM drives WHERE drive_id = ?').get(drive_id);
+    if (!drive) {
+      return res.status(404).json({ error: 'Drive not found' });
+    }
+
+    // Set Server-Sent Events headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    if (typeof res.flushHeaders === 'function') {
+      res.flushHeaders();
+    }
+
+    // If drive is already marked as lost, immediately fire KILL event and close
+    if (drive.status === 'LOST') {
+      res.write(`data: ${JSON.stringify({
+        type: 'KILL',
+        drive_id,
+        reason: drive.lost_reason || 'Storage access revoked by administrator.',
+        timestamp: Date.now()
+      })}\n\n`);
+      return res.end();
+    }
+
+    const sid = session_id || uuidv4();
+    const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').replace(/^.*:/, '');
+    const sessionRecord = {
+      session_id: sid,
+      drive_id,
+      user_email: (user_email || '').toLowerCase().trim(),
+      hardware_fingerprint: hardware_fingerprint || '',
+      hostname: hostname || '',
+      os_user: os_user || '',
+      ip: clientIp || '127.0.0.1',
+      connected_at: Date.now(),
+      res
+    };
+
+    activeSessions.set(sid, sessionRecord);
+    console.log(`📡 SSE stream active for drive ${drive_id} (Session: ${sid.slice(0, 8)}…, User: ${sessionRecord.user_email || 'anonymous'}, Host: ${sessionRecord.hostname || 'unknown'})`);
+
+    // Initial handshake event
+    res.write(`data: ${JSON.stringify({ type: 'CONNECTED', drive_id, session_id: sid })}\n\n`);
+
+    // Keep-alive heartbeat every 15s to keep NAT/firewalls open
+    const pingTimer = setInterval(() => {
+      try {
+        res.write(': ping\n\n');
+      } catch (err) {
+        clearInterval(pingTimer);
+      }
+    }, 15000);
+
+    req.on('close', () => {
+      clearInterval(pingTimer);
+      if (activeSessions.has(sid)) {
+        activeSessions.delete(sid);
+        console.log(`🔌 SSE stream disconnected for session ${sid.slice(0, 8)}… (Drive: ${drive_id})`);
+      }
+    });
+
+  } catch (err) {
+    console.error('SSE connection error:', err);
+    try {
+      res.status(500).end();
+    } catch (e) {}
+  }
+});
+
+// ──────────────────────────────────────────────
+// Route: POST /api/session/end
+// ──────────────────────────────────────────────
+
+app.post('/api/session/end', (req, res) => {
+  try {
+    const { drive_id, session_id } = req.body;
+    if (session_id && activeSessions.has(session_id)) {
+      const s = activeSessions.get(session_id);
+      try {
+        s.res.end();
+      } catch (e) {}
+      activeSessions.delete(session_id);
+      console.log(`🛑 Session explicitly terminated: ${session_id.slice(0, 8)}…`);
+    }
+    return res.status(200).json({ status: 'OK' });
+  } catch (err) {
+    console.error('Session end error:', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ──────────────────────────────────────────────
 // Dashboard API Routes
 // ──────────────────────────────────────────────
 
@@ -2045,12 +2176,29 @@ app.get('/api/dashboard/drives', requireAdminKey, (req, res) => {
         'SELECT COUNT(*) as c FROM trusted_devices WHERE drive_id = ?'
       ).get(d.drive_id).c;
 
+      // Collect live active sessions for this drive
+      const liveSessions = [];
+      for (const s of activeSessions.values()) {
+        if (s.drive_id === d.drive_id) {
+          liveSessions.push({
+            session_id:           s.session_id,
+            user_email:           s.user_email,
+            hardware_fingerprint: s.hardware_fingerprint,
+            hostname:             s.hostname,
+            os_user:              s.os_user,
+            ip:                   s.ip,
+            connected_at:         s.connected_at
+          });
+        }
+      }
+
       return {
         ...d,
-        created_at:       new Date(d.created_at).toISOString(),
-        updated_at:       new Date(d.updated_at).toISOString(),
-        access_list_count: accessCount,
-        trusted_device_count: deviceCount
+        created_at:           new Date(d.created_at).toISOString(),
+        updated_at:           new Date(d.updated_at).toISOString(),
+        access_list_count:    accessCount,
+        trusted_device_count: deviceCount,
+        active_sessions:      liveSessions
       };
     });
 
