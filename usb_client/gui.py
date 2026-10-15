@@ -336,7 +336,9 @@ class USBKillswitchApp(ctk.CTk):
                 if is_online and is_revoked:
                     logger.warning(f"Drive {drive_id} marked as revoked/LOST on server: {rev_reason}. Offline lease purged.")
                     lm.clear_lease_token(lease_path=LEASE_FILE, vault_path=VAULT_FILE)
-                    return False
+                    self._show_unlock_screen()
+                    self._on_unlock_failed(f"REMOTE KILLSWITCH ACTIVE: Storage access permanently revoked ({rev_reason}).")
+                    return True
 
             # Step 2: Check local offline lease (allowed both offline and when online & not revoked)
             lease = lm.load_lease_token(LEASE_FILE, k_local, drive_id, vault_path=VAULT_FILE)

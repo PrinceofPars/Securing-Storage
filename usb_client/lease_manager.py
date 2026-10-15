@@ -361,7 +361,7 @@ def check_drive_revocation(
     if not check_internet_connectivity():
         return False, False, None
 
-    url = f"{api_base_url.rstrip('/')}/api/drive-status/{drive_id}"
+    url = f"{api_base_url.rstrip('/')}/api/status/{drive_id}"
     try:
         r = requests.get(url, timeout=timeout)
         if r.status_code == 200:
@@ -372,9 +372,6 @@ def check_drive_revocation(
                 clear_lease_token(lease_path=lease_path, vault_path=vault_path)
                 return True, True, reason
             return True, False, None
-        elif r.status_code == 404:
-            clear_lease_token(lease_path=lease_path, vault_path=vault_path)
-            return True, True, "Drive ID is not registered on the security server."
     except Exception as e:
         logger.debug(f"Drive revocation check error: {e}")
 
