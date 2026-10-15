@@ -42,7 +42,6 @@ except ImportError:
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-LEASE_FILENAME        = 'lease.tok'
 LEASE_VERSION         = 2
 CONNECTIVITY_TIMEOUT  = 3
 CONNECTIVITY_HOST     = '8.8.8.8'
@@ -99,10 +98,6 @@ def _derive_lease_key(k_local: bytes, drive_id: str) -> bytes:
     )
     return hkdf.derive(k_local)
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Lease Token Storage
-# ──────────────────────────────────────────────────────────────────────────────
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Lease Token Storage
@@ -571,35 +566,3 @@ def authenticate(
         if success:
             return 'OFFLINE_GRANTED', cks, msg, False, None
         return 'OFFLINE_DENIED', None, msg, False, None
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Lease Info Display (for GUI/debugging)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def get_lease_info(
-    lease_path: Optional[Path],
-    k_local: bytes,
-    drive_id: str,
-    vault_path: Optional[Path] = None
-) -> Optional[dict]:
-    """Return lease info dict or None."""
-    lease = load_lease_token(lease_path, k_local, drive_id, vault_path=vault_path)
-    if not lease:
-        return None
-
-    now        = int(time.time())
-    expires_at = lease.get('expires_at', 0)
-    time_left  = expires_at - now
-
-    return {
-        'drive_id':    lease.get('drive_id', ''),
-        'fingerprint': lease.get('fingerprint', ''),
-        'user_email':  lease.get('user_email', ''),
-        'issued_at':   lease.get('issued_at', 0),
-        'expires_at':  expires_at,
-        'is_expired':  now >= expires_at,
-        'time_left_seconds': max(time_left, 0),
-        'days_left':   max(time_left // 86400, 0),
-        'hours_left':  max((time_left % 86400) // 3600, 0)
-    }

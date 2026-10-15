@@ -20,13 +20,11 @@ Features:
 import json
 import logging
 import os
-import platform
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-import tkinter as tk
 import uuid
 import socket
 import getpass
@@ -46,7 +44,6 @@ if sys.platform == 'win32' and hasattr(sys.stdout, 'reconfigure'):
         pass
 
 import customtkinter as ctk
-from PIL import Image
 import qrcode
 
 # Local security modules
@@ -145,6 +142,7 @@ COLORS = {
     'danger':        '#f85149',  # Crimson warning / lock
     'danger_hover':  '#da3633',  # Danger hover state
     'danger_bg':     '#2c1516',  # Danger badge background
+    'danger_dulled': '#e06c75',  # Muted dulled red for hover states
     'warning':       '#e3b341',  # Amber caution / pending
     'warning_bg':    '#2b2210',  # Amber badge background
     'info':          '#58a6ff',  # Informational blue
@@ -191,15 +189,6 @@ def load_local_key() -> Optional[bytes]:
         except Exception:
             pass
     return None
-
-def save_config(config: dict):
-    if VAULT_FILE.exists():
-        try:
-            ce.update_vault_header(VAULT_FILE, config=config)
-            return
-        except Exception:
-            pass
-    CONFIG_FILE.write_text(json.dumps(config, indent=2), encoding='utf-8')
 
 def generate_qr_ctk_image(data_str: str, size: int = 160) -> ctk.CTkImage:
     """Generate high-contrast QR code embedded on dark matte container."""
@@ -452,6 +441,26 @@ class USBKillswitchApp(ctk.CTk):
         )
         self.init_google_btn.pack(fill="x", pady=(0, 6))
 
+        def _on_init_btn_enter(event=None):
+            if self._init_owner_email:
+                self.init_google_btn.configure(
+                    text="Change email account",
+                    text_color=COLORS['danger_dulled'],
+                    hover_color=COLORS['danger_bg'],
+                    border_color="#5c2629"
+                )
+
+        def _on_init_btn_leave(event=None):
+            if self._init_owner_email:
+                self.init_google_btn.configure(
+                    text=f"✓ Authenticated as {self._init_owner_email}",
+                    text_color=COLORS['text'],
+                    border_color=COLORS['border']
+                )
+
+        self.init_google_btn.bind("<Enter>", _on_init_btn_enter, add="+")
+        self.init_google_btn.bind("<Leave>", _on_init_btn_leave, add="+")
+
         self.init_email_badge = ctk.CTkLabel(inner, text="Status: Awaiting Google authentication",
                                              font=ctk.CTkFont(family="Consolas", size=10),
                                              text_color=COLORS['text_muted'])
@@ -550,7 +559,14 @@ class USBKillswitchApp(ctk.CTk):
         self._focus_window()
         self._init_owner_email = email
         self.init_email_badge.configure(text=f"✓ Verified Owner: {email}", text_color=COLORS['success'])
-        self.init_google_btn.configure(text=f"✓ Authenticated as {email}", fg_color=COLORS['bg_hover'], text_color=COLORS['text'])
+        self.init_google_btn.configure(
+            text=f"✓ Authenticated as {email}",
+            fg_color=COLORS['bg_input'],
+            hover_color=COLORS['danger_bg'],
+            border_color=COLORS['border'],
+            border_width=1,
+            text_color=COLORS['text']
+        )
         self.init_status.configure(text=f"Owner identity verified: {email}", text_color=COLORS['success'])
 
     def _open_existing_vault(self):
@@ -831,6 +847,22 @@ class USBKillswitchApp(ctk.CTk):
                       command=self._open_existing_vault).pack(side="right")
 
     def _confirm_reinitialize(self):
+        config = load_config()
+        manifest = self.session.get('manifest', {}) if self.session.get('unlocked') else {}
+        owner_email = (
+            (config.get('owner_email') if config else '') or
+            manifest.get('drive_metadata', {}).get('owner_email', '')
+        ).strip().lower()
+        active_email = (
+            self.session.get('user_email') or
+            getattr(self, '_current_user_email', '') or
+            ''
+        ).strip().lower()
+
+        if owner_email and active_email and owner_email != active_email:
+            messagebox.showerror("Permission Denied", "Only the drive owner can re-initialize this vault.")
+            return
+
         if messagebox.askyesno("Re-initialize Vault", "Are you sure you want to re-initialize this drive?\n\nExisting encrypted vault data and temporary session files will be replaced."):
             if self.session.get('unlocked'):
                 working_dir = self.session.get('working_dir')
@@ -1279,25 +1311,29 @@ class USBKillswitchApp(ctk.CTk):
                                            text_color=COLORS['success'])
         self.ws_status_text.pack(side="left")
 
-        # Timer
-        self.ws_timer = ctk.CTkLabel(top_inner, text="Session: 00:00:00",
-                                     font=ctk.CTkFont(family="Consolas", size=11),
-                                     text_color=COLORS['text_dim'])
-        self.ws_timer.pack(side="right", padx=(0, 10))
+        # Timer (Session Time Keeper)
+        self.ws_timer = ctk.CTkLabel(
+            top_inner, text="Session: 00:00:00", height=32, width=145,
+            fg_color="#f8fafc", corner_radius=4,
+            border_width=1, border_color="#cbd5e1",
+            font=ctk.CTkFont(family="Consolas", size=11, weight="bold"),
+            text_color="#0f172a"
+        )
+        self.ws_timer.pack(side="right", padx=(10, 0))
 
         # Lock Command Actions
         ctk.CTkButton(top_inner, text="Save & Lock Vault", height=32, width=130,
                       font=ctk.CTkFont(size=11, weight="bold"),
                       fg_color=COLORS['accent'], hover_color=COLORS['accent_hover'],
                       corner_radius=4,
-                      command=self._do_lock_and_save).pack(side="right", padx=(6, 0))
+                      command=self._do_lock_and_save).pack(side="right", padx=(10, 0))
 
         ctk.CTkButton(top_inner, text="Discard & Exit", height=32, width=110,
                       font=ctk.CTkFont(size=11),
                       fg_color=COLORS['danger_bg'], hover_color=COLORS['danger_hover'],
                       border_width=1, border_color=COLORS['danger'],
                       text_color=COLORS['danger'], corner_radius=4,
-                      command=self._do_lock_no_save).pack(side="right", padx=(6, 0))
+                      command=self._do_lock_no_save).pack(side="right", padx=(10, 0))
 
         # Main Workspace Container
         main = ctk.CTkFrame(self, fg_color="transparent")
@@ -1389,12 +1425,26 @@ class USBKillswitchApp(ctk.CTk):
         bottom_inner = ctk.CTkFrame(bottom, fg_color="transparent")
         bottom_inner.pack(fill="both", expand=True, padx=16)
 
-        ctk.CTkButton(bottom_inner, text="Re-initialize Drive", height=22, width=120,
-                      font=ctk.CTkFont(size=10),
-                      fg_color="transparent", border_width=1,
-                      border_color=COLORS['border'], hover_color=COLORS['bg_card_alt'],
-                      text_color=COLORS['text_dim'], corner_radius=4,
-                      command=self._confirm_reinitialize).pack(side="left", padx=(0, 12))
+        owner_email = (
+            (config.get('owner_email') if config else '') or
+            manifest.get('drive_metadata', {}).get('owner_email', '')
+        ).strip().lower()
+        active_email = (
+            self.session.get('user_email') or
+            getattr(self, '_current_user_email', '') or
+            ''
+        ).strip().lower()
+        is_owner = bool(owner_email and active_email and owner_email == active_email)
+        if not owner_email:
+            is_owner = True
+
+        if is_owner:
+            ctk.CTkButton(bottom_inner, text="Re-initialize Drive", height=22, width=120,
+                          font=ctk.CTkFont(size=10),
+                          fg_color="transparent", border_width=1,
+                          border_color=COLORS['border'], hover_color=COLORS['bg_card_alt'],
+                          text_color=COLORS['text_dim'], corner_radius=4,
+                          command=self._confirm_reinitialize).pack(side="left", padx=(0, 12))
 
         drive_id_short = config.get('drive_id', '?')[:8] if config else '?'
         ctk.CTkLabel(bottom_inner, text=f"Drive ID: {drive_id_short}...",

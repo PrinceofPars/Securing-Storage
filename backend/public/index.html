@@ -434,6 +434,50 @@
       color: var(--status-warn);
       border: 1px solid var(--status-warn-bd);
     }
+    .status-chip.in-use {
+      background: var(--status-ok-bg);
+      color: var(--status-ok);
+      border: 1px solid var(--status-ok-bd);
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .status-chip.in-use::before {
+      display: none;
+    }
+    .status-chip.in-use .hopping-dots {
+      display: inline-flex;
+      align-items: center;
+      gap: 2.5px;
+      height: 10px;
+    }
+    .status-chip.in-use .hopping-dots span {
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background-color: currentColor;
+      display: inline-block;
+      animation: hopVertical 1s infinite ease-in-out;
+    }
+    .status-chip.in-use .hopping-dots span:nth-child(1) {
+      animation-delay: 0s;
+    }
+    .status-chip.in-use .hopping-dots span:nth-child(2) {
+      animation-delay: 0.16s;
+    }
+    .status-chip.in-use .hopping-dots span:nth-child(3) {
+      animation-delay: 0.32s;
+    }
+    @keyframes hopVertical {
+      0%, 80%, 100% {
+        transform: translateY(0);
+        opacity: 0.45;
+      }
+      40% {
+        transform: translateY(-3px);
+        opacity: 1;
+      }
+    }
 
     /* Spec Key-Value Row */
     .spec-grid {
@@ -794,16 +838,7 @@
     <!-- Segmented Tab Navigation -->
     <div class="nav-bar">
       <nav class="segmented-tabs" aria-label="Console views">
-        <button class="tab-button active" data-tab="approvals" id="tab-approvals">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-            <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-          </svg>
-          Pending Approvals
-          <span class="tab-count" id="pendingBadge" style="display:none">0</span>
-        </button>
-
-        <button class="tab-button" data-tab="drives" id="tab-drives">
+        <button class="tab-button active" data-tab="drives" id="tab-drives">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
             <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
@@ -820,24 +855,20 @@
           </svg>
           Audit Stream
         </button>
+
+        <button class="tab-button" data-tab="approvals" id="tab-approvals">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+          </svg>
+          Pending Approvals
+          <span class="tab-count" id="pendingBadge" style="display:none">0</span>
+        </button>
       </nav>
     </div>
 
-    <!-- ═══ View: Pending Approvals ═══ -->
-    <section class="tab-panel active" id="panel-approvals" aria-labelledby="tab-approvals">
-      <div class="section-label">Device Authorization Queue</div>
-      <div id="pendingList">
-        <div class="empty-state">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-          </svg>
-          <div class="empty-state-text">No pending authorization requests.</div>
-        </div>
-      </div>
-    </section>
-
     <!-- ═══ View: Registered Vaults ═══ -->
-    <section class="tab-panel" id="panel-drives" aria-labelledby="tab-drives">
+    <section class="tab-panel active" id="panel-drives" aria-labelledby="tab-drives">
       <div class="section-label">Cryptographic Storage Units</div>
       <div id="drivesList">
         <div class="empty-state">
@@ -862,6 +893,19 @@
             <line x1="12" y1="19" x2="20" y2="19"/>
           </svg>
           <div class="empty-state-text">No audit entries recorded.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ View: Pending Approvals ═══ -->
+    <section class="tab-panel" id="panel-approvals" aria-labelledby="tab-approvals">
+      <div class="section-label">Device Authorization Queue</div>
+      <div id="pendingList">
+        <div class="empty-state">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+          <div class="empty-state-text">No pending authorization requests.</div>
         </div>
       </div>
     </section>
@@ -900,7 +944,6 @@
       document.documentElement.setAttribute('data-theme', next);
       localStorage.setItem('theme', next);
       updateThemeUI(next);
-      showToast(`Switched to ${next === 'dark' ? 'Dark' : 'Light Ivory'} console`, 'info');
     }
 
     // ─── HTTP Helper ───
@@ -930,6 +973,20 @@
       const hrs = Math.floor(mins / 60);
       if (hrs < 24) return `${hrs}h ago`;
       return `${Math.floor(hrs / 24)}d ago`;
+    }
+
+    function formatDuration(ts) {
+      if (!ts) return '—';
+      const diffSec = Math.max(0, Math.floor((Date.now() - new Date(ts).getTime()) / 1000));
+      if (diffSec < 60) return `${diffSec}s`;
+      const mins = Math.floor(diffSec / 60);
+      const remSec = diffSec % 60;
+      if (mins < 60) return remSec > 0 ? `${mins}m ${remSec}s` : `${mins}m`;
+      const hrs = Math.floor(mins / 60);
+      const remMins = mins % 60;
+      if (hrs < 24) return remMins > 0 ? `${hrs}h ${remMins}m` : `${hrs}h`;
+      const days = Math.floor(hrs / 24);
+      return `${days}d ${hrs % 24}h`;
     }
 
     function truncFp(fp) {
@@ -1020,7 +1077,7 @@
             <div class="panel-title-wrap">
               <span class="panel-title">${d.label || 'Unlabeled Drive'}</span>
               <span class="status-chip ${d.status === 'ACTIVE' ? 'ok' : 'err'}">${d.status}</span>
-              ${hasActive ? `<span class="status-chip ok" style="background:rgba(16,185,129,0.15);border-color:#10b981;color:#10b981;">● IN USE</span>` : ''}
+              ${hasActive ? `<span class="status-chip in-use"><span class="hopping-dots" aria-hidden="true"><span></span><span></span><span></span></span>IN USE</span>` : ''}
             </div>
             <div class="btn-row" style="margin-top:0">
               ${d.status === 'ACTIVE'
@@ -1037,13 +1094,6 @@
             <div class="spec-item"><span class="spec-k">Authorized Users:</span> <span class="spec-v">${d.access_list_count}</span></div>
             <div class="spec-item"><span class="spec-k">Trusted Hosts:</span> <span class="spec-v">${d.trusted_device_count}</span></div>
             <div class="spec-item"><span class="spec-k">Registered:</span> <span class="spec-v">${timeAgo(d.created_at)}</span></div>
-            <div class="spec-item">
-              <span class="spec-k">Active Session:</span>
-              <span class="spec-v">${hasActive
-                ? `<span style="color:var(--status-ok);font-weight:600">● ${d.active_sessions.length} Online</span>`
-                : `<span style="color:var(--text-dim)">○ Inactive / Idle</span>`
-              }</span>
-            </div>
           </div>
 
           ${hasActive ? `
@@ -1052,13 +1102,16 @@
               <span class="led-dot" style="background:#10b981;box-shadow:0 0 6px #10b981;"></span>
               LIVE ACTIVE SESSION DETECTED
             </div>
-            ${d.active_sessions.map(s => `
-              <div style="font-size: 12px; display: flex; flex-direction: column; gap: 3px;">
+            ${d.active_sessions.map(s => {
+              const cleanIp = (s.ip || '').split(',')[0].trim().replace(/^::ffff:/, '') || '—';
+              return `
+              <div style="font-size: 12px; display: flex; flex-direction: column; gap: 4px;">
                 <div><span class="spec-k">Active User:</span> <strong style="color:var(--text-main); font-size:13px">${s.user_email || 'Verified Guest / Host'}</strong></div>
-                <div><span class="spec-k">Host Machine:</span> <span class="code-tag">${s.hostname || 'Host'}</span> ${s.os_user ? `(User: ${s.os_user})` : ''} &bull; <span class="spec-k">IP:</span> ${s.ip}</div>
-                <div><span class="spec-k">Fingerprint:</span> <span class="code-tag">${(s.hardware_fingerprint || '').slice(0, 16)}…</span> &bull; <span class="spec-k">Connected:</span> ${timeAgo(s.connected_at)}</div>
+                <div><span class="spec-k">Host Machine:</span> <span class="code-tag">${s.hostname || 'Host'}</span>${s.os_user ? ` &bull; <span class="spec-k">Host Name:</span> <span class="code-tag">${s.os_user}</span>` : ''} &bull; <span class="spec-k">IP:</span> <span class="code-tag">${cleanIp}</span></div>
+                <div><span class="spec-k">Connected Duration:</span> <span class="spec-v">${formatDuration(s.connected_at)}</span></div>
               </div>
-            `).join('<div style="height:1px;background:rgba(16,185,129,0.2);margin:6px 0;"></div>')}
+              `;
+            }).join('<div style="height:1px;background:rgba(16,185,129,0.2);margin:6px 0;"></div>')}
           </div>` : ''}
 
           ${d.lost_reason ? `<div style="font-size:12px;color:var(--status-err);margin-bottom:8px">Reason: ${d.lost_reason}</div>` : ''}
@@ -1321,7 +1374,7 @@
                   <td><strong style="color:var(--text-main)">${l.drive_label}</strong></td>
                   <td><span class="status-chip ${getChipClass(l.result)}">${l.result}</span></td>
                   <td>${l.email || '<span style="color:var(--text-dim)">—</span>'}</td>
-                  <td><span class="code-tag">${l.ip || '—'}</span></td>
+                  <td><span class="code-tag">${(l.ip || '—').split(',')[0].trim().replace(/^::ffff:/, '')}</span></td>
                 </tr>
               `).join('')}
             </tbody>

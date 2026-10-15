@@ -171,6 +171,7 @@ console.log(`✅  Database initialised at: ${path.resolve(DB_PATH)}`);
 // ──────────────────────────────────────────────
 
 const app = express();
+app.set('trust proxy', true);
 
 // In-memory registry for live active client sessions (Server-Sent Events)
 // Map: session_id -> { res, drive_id, session_id, user_email, hardware_fingerprint, hostname, os_user, ip, connected_at }
@@ -276,12 +277,36 @@ function requireAdminKey(req, res, next) {
   return res.status(401).json({ error: 'Unauthorised. Valid admin or owner session required.' });
 }
 
+function getClientIp(req) {
+  if (!req) return '127.0.0.1';
+  // 1. Cloudflare connecting IP
+  if (req.headers && req.headers['cf-connecting-ip']) {
+    return String(req.headers['cf-connecting-ip']).trim();
+  }
+  // 2. Standard X-Real-IP
+  if (req.headers && req.headers['x-real-ip']) {
+    return String(req.headers['x-real-ip']).trim();
+  }
+  // 3. X-Forwarded-For (first entry is original client IP: "client, proxy1, proxy2")
+  const xForwardedFor = req.headers && req.headers['x-forwarded-for'];
+  if (xForwardedFor) {
+    const firstIp = String(xForwardedFor).split(',')[0].trim();
+    if (firstIp) {
+      return firstIp.replace(/^::ffff:/, '');
+    }
+  }
+  // 4. Fallback to req.ip or socket remote address
+  const rawIp = req.ip || (req.socket && req.socket.remoteAddress) || '';
+  return String(rawIp).replace(/^::ffff:/, '').trim() || '127.0.0.1';
+}
+
 function logAuthEvent(drive_id, fingerprint_hash, user_email, result, req) {
   try {
+    const ip = getClientIp(req);
     db.prepare(`
       INSERT INTO auth_log (drive_id, fingerprint_hash, user_email, result, ip_address, timestamp)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(drive_id, fingerprint_hash, user_email || null, result, req.ip, Date.now());
+    `).run(drive_id, fingerprint_hash, user_email || null, result, ip, Date.now());
   } catch (e) {
     console.error('Failed to write auth log:', e.message);
   }
@@ -367,82 +392,13 @@ app.post('/api/register', (req, res) => {
 });
 
 // ──────────────────────────────────────────────
-// Route: POST /api/owner/login & GET /api/owner/me
+// Route: GET /api/owner/me
 // ──────────────────────────────────────────────
-
-app.post('/api/owner/login', (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ error: 'Email is required.' });
-  const normalizedEmail = email.toLowerCase().trim();
-  const token = createOwnerToken(normalizedEmail);
-  res.setHeader('Set-Cookie', `owner_session=${encodeURIComponent(token)}; Path=/; Max-Age=${30 * 24 * 60 * 60}; SameSite=Lax`);
-  return res.status(200).json({ status: 'ok', owner_email: normalizedEmail, token });
-});
 
 app.get('/api/owner/me', (req, res) => {
   const ownerEmail = getOwnerEmail(req);
   if (!ownerEmail) return res.status(401).json({ authenticated: false });
   return res.status(200).json({ authenticated: true, owner_email: ownerEmail });
-});
-
-app.get('/api/owner/drives', (req, res) => {
-  const ownerEmail = getOwnerEmail(req);
-  if (!ownerEmail) return res.status(401).json({ error: 'Not authenticated as owner' });
-
-  try {
-    const drives = db.prepare(`
-      SELECT drive_id, label, owner_email, status, lost_reason, created_at, updated_at
-      FROM drives WHERE owner_email = ? ORDER BY created_at DESC
-    `).all(ownerEmail.toLowerCase().trim());
-
-    const result = drives.map(d => {
-      const accessCount = db.prepare(
-        'SELECT COUNT(*) as c FROM access_list WHERE drive_id = ?'
-      ).get(d.drive_id).c;
-
-      const deviceCount = db.prepare(
-        'SELECT COUNT(*) as c FROM trusted_devices WHERE drive_id = ?'
-      ).get(d.drive_id).c;
-
-      return {
-        ...d,
-        created_at: new Date(d.created_at).toISOString(),
-        updated_at: new Date(d.updated_at).toISOString(),
-        access_list_count: accessCount,
-        trusted_device_count: deviceCount
-      };
-    });
-
-    return res.status(200).json({ drives: result });
-  } catch (err) {
-    console.error('Owner drives error:', err);
-    return res.status(500).json({ error: 'Internal server error.' });
-  }
-});
-
-app.get('/api/owner/pending', (req, res) => {
-  const ownerEmail = getOwnerEmail(req);
-  if (!ownerEmail) return res.status(401).json({ error: 'Not authenticated as owner' });
-
-  try {
-    const pending = db.prepare(`
-      SELECT pr.*, d.label as drive_label, d.owner_email
-      FROM pending_requests pr
-      JOIN drives d ON pr.drive_id = d.drive_id
-      WHERE d.owner_email = ? AND pr.status = 'PENDING'
-      ORDER BY pr.created_at DESC
-    `).all(ownerEmail.toLowerCase().trim());
-
-    return res.status(200).json({
-      pending: pending.map(p => ({
-        ...p,
-        created_at: new Date(p.created_at).toISOString()
-      }))
-    });
-  } catch (err) {
-    console.error('Owner pending error:', err);
-    return res.status(500).json({ error: 'Internal server error.' });
-  }
 });
 
 // In-memory desktop client Google login sessions
@@ -777,7 +733,6 @@ app.get('/auth/google', (req, res) => {
   }
 
   const oauthInfo = buildGoogleOAuthUrl(req, { reqId, sessionId, redirectUrl, hintEmail });
-  const hasRealOAuth = Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
   const isProd = process.env.NODE_ENV === 'production';
   const redirectUri = getGoogleRedirectUri(req);
 
@@ -798,7 +753,6 @@ app.get('/auth/google', (req, res) => {
       document.documentElement.setAttribute('data-theme', saved);
     })();
   </script>
-  ${hasRealOAuth ? '<script src="https://accounts.google.com/gsi/client" async defer></script>' : ''}
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -1042,52 +996,27 @@ app.get('/auth/google', (req, res) => {
     ${reqId ? `<div class="req-badge">Pending Request: <strong>${reqId}</strong></div>` : ''}
     ${sessionId ? `<div class="req-badge">Connecting Desktop Client App</div>` : ''}
 
-    ${hasRealOAuth ? `
-      <!-- Official Google OAuth 2.0 Redirect Button -->
-      <a href="${oauthInfo.authUrl}" class="btn-google">
-        <svg class="google-logo" style="width:18px;height:18px;" viewBox="0 0 24 24">
-          <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-          <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-          <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
-          <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-        </svg>
-        <span>Continue with Google</span>
-      </a>
+    <!-- Unconfigured Notice -->
+    <div class="setup-box">
+      <div class="setup-title">🔒 Real Google OAuth Credentials Required</div>
+      <div class="setup-desc">To prevent email infringement and guarantee identity authenticity, configure your Google Cloud OAuth Client ID in <code>backend/.env</code>:</div>
+      <div class="code-snippet">GOOGLE_CLIENT_ID=your-id.apps.googleusercontent.com<br>GOOGLE_CLIENT_SECRET=your-secret</div>
+      <div style="margin-top:8px;font-size:11px;color:var(--text-muted);">Redirect URI: <code>${redirectUri}</code></div>
+    </div>
 
-      <!-- Google Identity Services One Tap / Standard Hook -->
-      <div id="g_id_onload"
-           data-client_id="${GOOGLE_CLIENT_ID}"
-           data-context="signin"
-           data-ux_mode="redirect"
-           data-login_uri="${redirectUri}"
-           data-auto_prompt="false">
-      </div>
-      <div class="security-note">
-        <span>🛡️ Cryptographically verified by Google. Email identity cannot be forged.</span>
+    ${!isProd ? `
+      <div class="dev-bypass">
+        <p style="font-size:12px;color:#f59e0b;margin-bottom:8px;"><strong>🧪 Development Mock Mode (Unverified)</strong><br>For local testing only. Blocked in production.</p>
+        <form method="POST" action="/auth/google/callback">
+          <input type="hidden" name="req" value="${reqId}">
+          <input type="hidden" name="session_id" value="${sessionId}">
+          <input type="hidden" name="redirect" value="${redirectUrl}">
+          <input type="email" name="email" class="input-box" placeholder="Enter test email address" value="${hintEmail}" required>
+          <button type="submit" class="btn-dev">Continue (Dev Mock)</button>
+        </form>
       </div>
     ` : `
-      <!-- Unconfigured Notice -->
-      <div class="setup-box">
-        <div class="setup-title">🔒 Real Google OAuth Credentials Required</div>
-        <div class="setup-desc">To prevent email infringement and guarantee identity authenticity, configure your Google Cloud OAuth Client ID in <code>backend/.env</code>:</div>
-        <div class="code-snippet">GOOGLE_CLIENT_ID=your-id.apps.googleusercontent.com<br>GOOGLE_CLIENT_SECRET=your-secret</div>
-        <div style="margin-top:8px;font-size:11px;color:var(--text-muted);">Redirect URI: <code>${redirectUri}</code></div>
-      </div>
-
-      ${!isProd ? `
-        <div class="dev-bypass">
-          <p style="font-size:12px;color:#f59e0b;margin-bottom:8px;"><strong>🧪 Development Mock Mode (Unverified)</strong><br>For local testing only. Blocked in production.</p>
-          <form method="POST" action="/auth/google/callback">
-            <input type="hidden" name="req" value="${reqId}">
-            <input type="hidden" name="session_id" value="${sessionId}">
-            <input type="hidden" name="redirect" value="${redirectUrl}">
-            <input type="email" name="email" class="input-box" placeholder="Enter test email address" value="${hintEmail}" required>
-            <button type="submit" class="btn-dev">Continue (Dev Mock)</button>
-          </form>
-        </div>
-      ` : `
-        <p style="color:#ef4444;font-size:12px;"><strong>Production Mode Active:</strong> Unverified email logins are permanently disabled. Set GOOGLE_CLIENT_ID on Render.</p>
-      `}
+      <p style="color:#ef4444;font-size:12px;"><strong>Production Mode Active:</strong> Unverified email logins are permanently disabled. Set GOOGLE_CLIENT_ID on Render.</p>
     `}
   </div>
   <script>
@@ -1449,7 +1378,7 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
 
 app.post('/api/request-status', (req, res) => {
   try {
-    const { request_id, drive_id } = req.body;
+    const { request_id } = req.body;
     if (!request_id) {
       return res.status(400).json({ error: 'request_id is required.' });
     }
@@ -1531,19 +1460,15 @@ app.post('/api/approve-request', requireAdminKey, (req, res) => {
 
     // Calculate lease duration
     let leaseSeconds;
-    let expiresAtUnix = null;
     const nowUnix = Math.floor(Date.now() / 1000);
 
     if (scope === 'ONE_TIME') {
       leaseSeconds = 12 * 60 * 60; // 12 hours
-      expiresAtUnix = nowUnix + leaseSeconds;
     } else if (scope === 'CUSTOM_LEASE') {
       const hours = parseInt(lease_hours) || 24;
       leaseSeconds = hours * 60 * 60;
-      expiresAtUnix = nowUnix + leaseSeconds;
     } else { // FOREVER
       leaseSeconds = LEASE_DAYS * 24 * 60 * 60; // JWT still expires, but trust doesn't
-      expiresAtUnix = null; // No expiry for trust
     }
 
     // Generate lease token
@@ -2088,7 +2013,7 @@ app.get('/api/drive-events/:drive_id', (req, res) => {
     }
 
     const sid = session_id || uuidv4();
-    const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').replace(/^.*:/, '');
+    const clientIp = getClientIp(req);
     const sessionRecord = {
       session_id: sid,
       drive_id,
@@ -2096,7 +2021,7 @@ app.get('/api/drive-events/:drive_id', (req, res) => {
       hardware_fingerprint: hardware_fingerprint || '',
       hostname: hostname || '',
       os_user: os_user || '',
-      ip: clientIp || '127.0.0.1',
+      ip: clientIp,
       connected_at: Date.now(),
       res
     };
@@ -2138,7 +2063,7 @@ app.get('/api/drive-events/:drive_id', (req, res) => {
 
 app.post('/api/session/end', (req, res) => {
   try {
-    const { drive_id, session_id } = req.body;
+    const { session_id } = req.body;
     if (session_id && activeSessions.has(session_id)) {
       const s = activeSessions.get(session_id);
       try {

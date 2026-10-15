@@ -24,7 +24,6 @@ import os
 import platform
 import re
 import subprocess
-import sys
 import uuid
 from typing import Optional
 
@@ -307,6 +306,9 @@ def display_fingerprint_info() -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
+    import sys
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     logging.basicConfig(level=logging.INFO)
     fp = display_fingerprint_info()
     print(f"Fingerprint: {fp}")

@@ -32,7 +32,6 @@ Dependencies: cryptography >= 41.0
 """
 
 import hashlib
-import io
 import json
 import logging
 import os
@@ -42,7 +41,7 @@ import struct
 import tempfile
 import time
 from pathlib import Path
-from typing import BinaryIO, Dict, List, Optional, Tuple, Union
+from typing import BinaryIO, List, Optional, Tuple, Union
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import hashes
@@ -63,11 +62,6 @@ TAG_SIZE        = 16             # GCM authentication tag (bytes)
 KEY_SIZE        = 32             # AES-256 key size (bytes)
 SALT_SIZE       = 32             # HKDF salt size (bytes)
 HEADER_BLOCK_SIZE = 4096        # Fixed 4 KB sector-aligned header block for v3
-HEADER_SIZE_V2  = 8 + 32 + 8    # magic + salt + manifest_offset = 48 bytes
-HEADER_SIZE     = HEADER_SIZE_V2
-DATA_START      = HEADER_SIZE
-
-LOCAL_KEY_FILENAME = 'local_key.bin'
 
 # Encapsulated Header Key Derivation Constants
 HEADER_KDF_SECRET = b'ZeroTrustStorageVaultHeaderV3-AuthKey'
@@ -266,13 +260,6 @@ def generate_local_key() -> bytes:
     return secrets.token_bytes(KEY_SIZE)
 
 
-def save_local_key(key_bytes: bytes, key_path: Path) -> None:
-    """Persist the local key share to the USB drive (legacy support)."""
-    key_path.parent.mkdir(parents=True, exist_ok=True)
-    key_path.write_bytes(key_bytes)
-    logger.info(f"Local key share saved to: {key_path}")
-
-
 def load_local_key(key_path: Path) -> bytes:
     """Load the local key share from the USB drive (legacy support)."""
     if not key_path.exists():
@@ -423,11 +410,6 @@ def hex_to_key_bytes(hex_str: str) -> bytes:
     if len(hex_str) != 64:
         raise ValueError(f"Key must be 64 hex chars (32 bytes), got {len(hex_str)}")
     return bytes.fromhex(hex_str)
-
-
-def bytes_to_hex(b: bytes) -> str:
-    """Convert raw bytes to hex string."""
-    return b.hex()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -663,29 +645,6 @@ def decrypt_single_file(
 
     k_master = bytes(KEY_SIZE)
     return plaintext
-
-
-def decrypt_single_file_to_temp(
-    vault_path: Path,
-    k_local: bytes,
-    k_cloud: bytes,
-    file_entry: dict
-) -> Path:
-    """
-    Decrypt a single file to a temporary location for viewing.
-
-    Returns:
-        Path to the decrypted temporary file.
-    """
-    plaintext = decrypt_single_file(vault_path, k_local, k_cloud, file_entry)
-
-    # Create temp dir preserving original filename
-    temp_dir = Path(tempfile.mkdtemp(prefix='usbvault_view_'))
-    filename = Path(file_entry['path']).name
-    out_path = temp_dir / filename
-    out_path.write_bytes(plaintext)
-    logger.info(f"Decrypted single file to: {out_path}")
-    return out_path
 
 
 # ──────────────────────────────────────────────────────────────────────────────
