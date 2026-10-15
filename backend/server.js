@@ -189,12 +189,25 @@ app.use('/dashboard', express.static(path.join(__dirname, 'public')));
 app.get('/privacy', (req, res) => res.sendFile(path.join(__dirname, 'public', 'privacy.html')));
 app.get('/terms', (req, res) => res.sendFile(path.join(__dirname, 'public', 'terms.html')));
 
-// Global rate limiter — 500 requests per 15 minutes per IP
+// Global rate limiter with automatic exemption for SSE, dashboard sync, and OAuth session checks
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 500,
+  max: 10000,
   standardHeaders: true,
-  legacyHeaders: false,
+  skip: (req) => {
+    const url = req.originalUrl || req.path || '';
+    // Never rate-limit real-time SSE streams, background dashboard sync, health checks, or OAuth polling
+    if (url.includes('/drive-events') ||
+        url.includes('/dashboard') ||
+        url.includes('/auth/google/check-session') ||
+        url.includes('/owner/me') ||
+        url.includes('/session/end') ||
+        url.includes('/status') ||
+        url.includes('/health')) {
+      return true;
+    }
+    return false;
+  },
   message: { error: 'Too many requests, please try again later.' }
 });
 app.use('/api/', globalLimiter);

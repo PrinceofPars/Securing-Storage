@@ -1210,6 +1210,28 @@
     }
 
     // ─── Data Sync ───
+    async function syncRealtimeState() {
+      try {
+        const [drivesRes, pendingRes] = await Promise.all([
+          apiFetch('/api/dashboard/drives'),
+          apiFetch('/api/dashboard/pending')
+        ]);
+
+        if (drivesRes.status === 200) {
+          if (!document.querySelector('.panel-drawer.open')) {
+            renderDrives(drivesRes.data.drives || []);
+          }
+        }
+        if (pendingRes.status === 200) {
+          renderPending(pendingRes.data.pending || []);
+        }
+
+        document.getElementById('statusDot').style.background = 'var(--status-ok)';
+      } catch (e) {
+        console.warn('Realtime sync warning:', e);
+      }
+    }
+
     async function refreshAll() {
       try {
         const [drivesRes, pendingRes, healthRes, meRes] = await Promise.all([
@@ -1219,9 +1241,9 @@
           apiFetch('/api/owner/me')
         ]);
 
-        if (meRes.status === 200 && meRes.data.authenticated) {
+        if (meRes.status === 200 && meRes.data && meRes.data.authenticated) {
           document.getElementById('userEmailText').textContent = meRes.data.owner_email;
-        } else {
+        } else if (meRes.status === 401 || (meRes.data && meRes.data.authenticated === false)) {
           document.getElementById('userEmailText').textContent = 'admin';
         }
 
@@ -1235,7 +1257,7 @@
         }
 
         document.getElementById('statusDot').style.background = 'var(--status-ok)';
-        const h = healthRes.data;
+        const h = healthRes.data || {};
         document.getElementById('statusText').textContent =
           `v${h.version || '2.0'} • ${h.drive_count || 0} vaults • ${h.pending_count || 0} pending`;
 
@@ -1251,10 +1273,10 @@
       const logContainer = document.getElementById('logsList');
       let allLogs = [];
 
-      for (const d of drives.slice(0, 10)) {
+      for (const d of (drives || []).slice(0, 10)) {
         try {
           const { data } = await apiFetch(`/api/status/${d.drive_id}`);
-          if (data.recent_auth_log) {
+          if (data && data.recent_auth_log) {
             allLogs.push(...data.recent_auth_log.map(l => ({
               ...l,
               drive_label: d.label || d.drive_id.slice(0, 8) + '…'
@@ -1279,6 +1301,7 @@
       }
 
       const getChipClass = (res) => {
+        if (!res) return '';
         if (res.startsWith('GRANTED')) return 'ok';
         if (res.startsWith('DENIED')) return 'err';
         if (res.startsWith('PENDING')) return 'warn';
@@ -1326,12 +1349,19 @@
       updateThemeUI(activeTheme);
       refreshAll();
 
-      // Automatically sync dashboard every 3 seconds for real-time active session tracking
+      // Automatically sync active sessions and pending approvals every 3 seconds
+      setInterval(() => {
+        if (!document.querySelector('.panel-drawer.open')) {
+          syncRealtimeState();
+        }
+      }, 3000);
+
+      // Periodically refresh full audit logs every 30 seconds
       setInterval(() => {
         if (!document.querySelector('.panel-drawer.open')) {
           refreshAll();
         }
-      }, 3000);
+      }, 30000);
     });
   </script>
 </body>
