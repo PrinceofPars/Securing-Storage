@@ -122,6 +122,7 @@ db.exec(`
     drive_id            TEXT NOT NULL,
     allowed_email       TEXT NOT NULL,
     added_at            INTEGER NOT NULL,
+    access_level        TEXT NOT NULL DEFAULT 'READ_ONLY',
     FOREIGN KEY (drive_id) REFERENCES drives(drive_id) ON DELETE CASCADE,
     UNIQUE(drive_id, allowed_email)
   );
@@ -144,6 +145,7 @@ db.exec(`
     hardware_fingerprint TEXT NOT NULL,
     requester_email     TEXT DEFAULT NULL,
     status              TEXT NOT NULL DEFAULT 'PENDING',
+    request_type        TEXT NOT NULL DEFAULT 'HOST_AUTH',
     granted_scope       TEXT DEFAULT NULL,
     expires_at          INTEGER DEFAULT NULL,
     cloud_key_share     TEXT DEFAULT NULL,
@@ -164,6 +166,15 @@ db.exec(`
   );
 `);
 
+// Safe migration for existing databases
+try {
+  db.prepare("ALTER TABLE access_list ADD COLUMN access_level TEXT NOT NULL DEFAULT 'READ_ONLY'").run();
+} catch (e) {}
+
+try {
+  db.prepare("ALTER TABLE pending_requests ADD COLUMN request_type TEXT NOT NULL DEFAULT 'HOST_AUTH'").run();
+} catch (e) {}
+
 console.log(`✅  Database initialised at: ${path.resolve(DB_PATH)}`);
 
 // ──────────────────────────────────────────────
@@ -176,6 +187,20 @@ app.set('trust proxy', 1);
 // In-memory registry for live active client sessions (Server-Sent Events)
 // Map: session_id -> { res, drive_id, session_id, user_email, hardware_fingerprint, hostname, os_user, ip, connected_at }
 const activeSessions = new Map();
+
+function broadcastDriveSessionEvent(drive_id, eventPayload, targetEmail = null) {
+  for (const [sid, session] of activeSessions.entries()) {
+    if (String(session.drive_id).toLowerCase().trim() === String(drive_id).toLowerCase().trim()) {
+      if (!targetEmail || (session.user_email && session.user_email.toLowerCase().trim() === targetEmail.toLowerCase().trim())) {
+        try {
+          session.res.write(`data: ${JSON.stringify(eventPayload)}\n\n`);
+        } catch (err) {
+          console.error(`Error sending SSE to session ${sid}:`, err);
+        }
+      }
+    }
+  }
+}
 
 // In-memory desktop client Google login sessions
 const googleClientSessions = new Map();
@@ -424,10 +449,11 @@ app.post('/api/register', (req, res) => {
       VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?)
     `).run(drive_id, cloud_key_share, normalizedEmail, label || null, now, now);
 
-    // Auto-add owner to access list
+    // Auto-add owner to access list with full READ_WRITE access
     db.prepare(`
-      INSERT OR IGNORE INTO access_list (drive_id, allowed_email, added_at)
-      VALUES (?, ?, ?)
+      INSERT INTO access_list (drive_id, allowed_email, added_at, access_level)
+      VALUES (?, ?, ?, 'READ_WRITE')
+      ON CONFLICT(drive_id, allowed_email) DO UPDATE SET access_level = 'READ_WRITE'
     `).run(drive_id, normalizedEmail, now);
 
     // If hardware fingerprint is provided, auto-trust owner device FOREVER
@@ -1297,6 +1323,11 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
         db.prepare('DELETE FROM trusted_devices WHERE id = ?').run(trustedDevice.id);
         console.log(`🔑  One-time trust consumed for drive ${drive_id}`);
 
+        const deviceEmail = (trustedDevice.user_email || email || drive.owner_email).toLowerCase().trim();
+        const isOwnerDevice = (deviceEmail === drive.owner_email.toLowerCase().trim());
+        const accessRow = isOwnerDevice ? null : db.prepare('SELECT access_level FROM access_list WHERE drive_id = ? AND allowed_email = ?').get(drive_id, deviceEmail);
+        const deviceAccessLevel = isOwnerDevice ? 'READ_WRITE' : (accessRow?.access_level || 'READ_ONLY');
+
         const leaseSeconds = 12 * 60 * 60;
         const lease = generateLeaseToken(drive_id, fingerprint_hash, leaseSeconds);
         logAuthEvent(drive_id, fingerprint_hash, trustedDevice.user_email || email, 'GRANTED_ONETIME', req);
@@ -1309,9 +1340,15 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
           expires_at_unix: lease.expiresAt,
           drive_label:     drive.label,
           trust_scope:     'ONE_TIME',
-          user_email:      trustedDevice.user_email || email || drive.owner_email
+          user_email:      trustedDevice.user_email || email || drive.owner_email,
+          access_level:    deviceAccessLevel
         });
       } else {
+        const deviceEmail = (trustedDevice.user_email || email || drive.owner_email).toLowerCase().trim();
+        const isOwnerDevice = (deviceEmail === drive.owner_email.toLowerCase().trim());
+        const accessRow = isOwnerDevice ? null : db.prepare('SELECT access_level FROM access_list WHERE drive_id = ? AND allowed_email = ?').get(drive_id, deviceEmail);
+        const deviceAccessLevel = isOwnerDevice ? 'READ_WRITE' : (accessRow?.access_level || 'READ_ONLY');
+
         let leaseSeconds = trustedDevice.trust_scope === 'FOREVER'
           ? LEASE_DAYS * 24 * 60 * 60
           : Math.max((trustedDevice.expires_at || (now + 86400)) - now, 3600);
@@ -1328,7 +1365,8 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
           expires_at_unix: lease.expiresAt,
           drive_label:     drive.label,
           trust_scope:     trustedDevice.trust_scope,
-          user_email:      trustedDevice.user_email || email || drive.owner_email
+          user_email:      trustedDevice.user_email || email || drive.owner_email,
+          access_level:    deviceAccessLevel
         });
       }
     }
@@ -1347,9 +1385,9 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
     // ──────────────────────────────────────────────
     // 3. User Provided Google Email: Check Access Rights
     // ──────────────────────────────────────────────
-    const isOwner = (email === drive.owner_email.toLowerCase());
+    const isOwner = (email === drive.owner_email.toLowerCase().trim());
     const accessEntry = db.prepare(
-      'SELECT allowed_email FROM access_list WHERE drive_id = ? AND allowed_email = ?'
+      'SELECT allowed_email, access_level FROM access_list WHERE drive_id = ? AND allowed_email = ?'
     ).get(drive_id, email);
     const isAllowedUser = Boolean(accessEntry);
 
@@ -1380,8 +1418,10 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
         VALUES (?, ?, ?, 'LEASE', ?, ?)
       `).run(drive_id, fingerprint_hash, email, now + leaseSeconds, Date.now());
 
+      const userAccessLevel = isOwner ? 'READ_WRITE' : (accessEntry?.access_level || 'READ_ONLY');
+
       logAuthEvent(drive_id, fingerprint_hash, email, 'GRANTED_VERIFIED_USER', req);
-      console.log(`✅  GRANTED (Verified User for ${isOwner ? 'Owner' : 'Authorized User'}): Drive ${drive_id} → ${email}`);
+      console.log(`✅  GRANTED (Verified User for ${isOwner ? 'Owner' : 'Authorized User'} [${userAccessLevel}]): Drive ${drive_id} → ${email}`);
 
       return res.status(200).json({
         status:          'GRANTED',
@@ -1391,7 +1431,8 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
         expires_at_unix: lease.expiresAt,
         drive_label:     drive.label,
         trust_scope:     'LEASE',
-        user_email:      email
+        user_email:      email,
+        access_level:    userAccessLevel
       });
     }
 
@@ -1479,6 +1520,12 @@ app.post('/api/request-status', (req, res) => {
     }
 
     if (request.status === 'APPROVED') {
+      const drive = db.prepare('SELECT owner_email FROM drives WHERE drive_id = ?').get(request.drive_id);
+      const reqUser = (request.requester_email || '').toLowerCase().trim();
+      const isDriveOwner = Boolean(drive && drive.owner_email && drive.owner_email.toLowerCase().trim() === reqUser);
+      const accessRow = isDriveOwner ? null : db.prepare('SELECT access_level FROM access_list WHERE drive_id = ? AND allowed_email = ?').get(request.drive_id, reqUser);
+      const accessLevel = isDriveOwner ? 'READ_WRITE' : (accessRow?.access_level || 'READ_ONLY');
+
       return res.status(200).json({
         status:          'APPROVED',
         request_id:      request.request_id,
@@ -1488,6 +1535,7 @@ app.post('/api/request-status', (req, res) => {
         expires_at_unix: request.expires_at,
         granted_scope:   request.granted_scope,
         user_email:      request.requester_email || '',
+        access_level:    accessLevel,
         message:         `Access approved with scope: ${request.granted_scope}`
       });
     }
@@ -1506,14 +1554,9 @@ app.post('/api/request-status', (req, res) => {
 
 app.post('/api/approve-request', requireAdminKey, (req, res) => {
   try {
-    const { request_id, scope, lease_hours } = req.body;
-    if (!request_id || !scope) {
-      return res.status(400).json({ error: 'request_id and scope are required.' });
-    }
-
-    const validScopes = ['ONE_TIME', 'CUSTOM_LEASE', 'FOREVER'];
-    if (!validScopes.includes(scope)) {
-      return res.status(400).json({ error: `scope must be one of: ${validScopes.join(', ')}` });
+    const { request_id, scope, lease_hours, access_level } = req.body;
+    if (!request_id) {
+      return res.status(400).json({ error: 'request_id is required.' });
     }
 
     const request = db.prepare(
@@ -1535,6 +1578,50 @@ app.post('/api/approve-request', requireAdminKey, (req, res) => {
 
     if (!isAdmin && (!authOwner || drive.owner_email.toLowerCase().trim() !== authOwner.toLowerCase().trim())) {
       return res.status(403).json({ error: 'Unauthorised. Only the verified drive owner can approve this request.' });
+    }
+
+    // Handle Edit Access Request approval
+    if (request.request_type === 'EDIT_ACCESS') {
+      const normEmail = (request.requester_email || '').toLowerCase().trim();
+      if (normEmail) {
+        db.prepare(`
+          INSERT INTO access_list (drive_id, allowed_email, added_at, access_level)
+          VALUES (?, ?, ?, 'READ_WRITE')
+          ON CONFLICT(drive_id, allowed_email) DO UPDATE SET access_level = 'READ_WRITE'
+        `).run(request.drive_id, normEmail, Date.now());
+
+        // Broadcast real-time SSE elevation to client session
+        broadcastDriveSessionEvent(request.drive_id, {
+          type: 'ACCESS_LEVEL_CHANGED',
+          drive_id: request.drive_id,
+          user_email: normEmail,
+          access_level: 'READ_WRITE'
+        }, normEmail);
+      }
+
+      db.prepare(`
+        UPDATE pending_requests
+        SET status = 'APPROVED', resolved_at = ?
+        WHERE request_id = ?
+      `).run(Date.now(), request_id);
+
+      console.log(`✅  APPROVED EDIT ACCESS: Request ${request_id} for ${normEmail}`);
+
+      return res.status(200).json({
+        message: `Edit access approved for ${normEmail}`,
+        request_id,
+        access_level: 'READ_WRITE'
+      });
+    }
+
+    // Standard Host Auth Request
+    if (!scope) {
+      return res.status(400).json({ error: 'scope is required for host authorization.' });
+    }
+
+    const validScopes = ['ONE_TIME', 'CUSTOM_LEASE', 'FOREVER'];
+    if (!validScopes.includes(scope)) {
+      return res.status(400).json({ error: `scope must be one of: ${validScopes.join(', ')}` });
     }
 
     // Calculate lease duration
@@ -1568,11 +1655,22 @@ app.post('/api/approve-request', requireAdminKey, (req, res) => {
       Date.now()
     );
 
+    const targetAccessLevel = (access_level === 'READ_WRITE') ? 'READ_WRITE' : 'READ_ONLY';
+
     if (request.requester_email) {
+      const normEmail = request.requester_email.toLowerCase().trim();
       db.prepare(`
-        INSERT OR IGNORE INTO access_list (drive_id, allowed_email, added_at)
-        VALUES (?, ?, ?)
-      `).run(request.drive_id, request.requester_email.toLowerCase().trim(), Date.now());
+        INSERT INTO access_list (drive_id, allowed_email, added_at, access_level)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(drive_id, allowed_email) DO UPDATE SET access_level = excluded.access_level
+      `).run(request.drive_id, normEmail, Date.now(), targetAccessLevel);
+
+      broadcastDriveSessionEvent(request.drive_id, {
+        type: 'ACCESS_LEVEL_CHANGED',
+        drive_id: request.drive_id,
+        user_email: normEmail,
+        access_level: targetAccessLevel
+      }, normEmail);
     }
 
     // Update the pending request with the key material (client will pick this up via polling)
@@ -1590,12 +1688,13 @@ app.post('/api/approve-request', requireAdminKey, (req, res) => {
       request_id
     );
 
-    console.log(`✅  APPROVED: Request ${request_id} → ${scope}${scope === 'CUSTOM_LEASE' ? ` (${lease_hours || 24}h)` : ''}`);
+    console.log(`✅  APPROVED: Request ${request_id} → ${scope} (${targetAccessLevel})${scope === 'CUSTOM_LEASE' ? ` (${lease_hours || 24}h)` : ''}`);
 
     return res.status(200).json({
       message:       `Request approved with scope: ${scope}`,
       request_id,
       scope,
+      access_level:  targetAccessLevel,
       expires_at:    lease.expiresAtISO,
       trust_scope:   trustScope
     });
@@ -1642,6 +1741,15 @@ app.post('/api/deny-request', requireAdminKey, (req, res) => {
       UPDATE pending_requests SET status = 'DENIED', resolved_at = ? WHERE request_id = ?
     `).run(Date.now(), request_id);
 
+    if (request.request_type === 'EDIT_ACCESS' && request.requester_email) {
+      const normEmail = request.requester_email.toLowerCase().trim();
+      broadcastDriveSessionEvent(request.drive_id, {
+        type: 'EDIT_ACCESS_DENIED',
+        drive_id: request.drive_id,
+        user_email: normEmail
+      }, normEmail);
+    }
+
     console.log(`⛔  DENIED: Request ${request_id}`);
 
     return res.status(200).json({
@@ -1664,7 +1772,7 @@ app.get('/api/request-info/:request_id', (req, res) => {
     const { request_id } = req.params;
     const request = db.prepare(`
       SELECT pr.request_id, pr.drive_id, pr.requester_email, pr.status, pr.created_at, pr.granted_scope, pr.hardware_fingerprint,
-             d.label as drive_label, d.owner_email
+             pr.request_type, d.label as drive_label, d.owner_email
       FROM pending_requests pr
       LEFT JOIN drives d ON pr.drive_id = d.drive_id
       WHERE pr.request_id = ?
@@ -1685,6 +1793,7 @@ app.get('/api/request-info/:request_id', (req, res) => {
       requester_email: request.requester_email || 'Unknown',
       fingerprint_preview: request.hardware_fingerprint ? request.hardware_fingerprint.slice(0, 16) + '...' : '',
       status: request.status,
+      request_type: request.request_type || 'HOST_AUTH',
       granted_scope: request.granted_scope,
       created_at: new Date(request.created_at).toISOString(),
       current_user: authOwner || null,
@@ -1700,14 +1809,9 @@ app.get('/api/request-info/:request_id', (req, res) => {
 
 app.post('/api/approve-quick', (req, res) => {
   try {
-    const { request_id, scope, lease_hours } = req.body;
-    if (!request_id || !scope) {
-      return res.status(400).json({ error: 'request_id and scope are required.' });
-    }
-
-    const validScopes = ['ONE_TIME', 'CUSTOM_LEASE', 'FOREVER'];
-    if (!validScopes.includes(scope)) {
-      return res.status(400).json({ error: `scope must be one of: ${validScopes.join(', ')}` });
+    const { request_id, scope, lease_hours, access_level } = req.body;
+    if (!request_id) {
+      return res.status(400).json({ error: 'request_id is required.' });
     }
 
     const request = db.prepare(
@@ -1730,6 +1834,49 @@ app.post('/api/approve-quick', (req, res) => {
 
     if (!isAdmin && (!authOwner || authOwner.toLowerCase() !== drive.owner_email.toLowerCase())) {
       return res.status(403).json({ error: 'Unauthorised. Only the verified drive owner can approve this request.' });
+    }
+
+    // Handle Edit Access Request approval
+    if (request.request_type === 'EDIT_ACCESS') {
+      const normEmail = (request.requester_email || '').toLowerCase().trim();
+      if (normEmail) {
+        db.prepare(`
+          INSERT INTO access_list (drive_id, allowed_email, added_at, access_level)
+          VALUES (?, ?, ?, 'READ_WRITE')
+          ON CONFLICT(drive_id, allowed_email) DO UPDATE SET access_level = 'READ_WRITE'
+        `).run(request.drive_id, normEmail, Date.now());
+
+        broadcastDriveSessionEvent(request.drive_id, {
+          type: 'ACCESS_LEVEL_CHANGED',
+          drive_id: request.drive_id,
+          user_email: normEmail,
+          access_level: 'READ_WRITE'
+        }, normEmail);
+      }
+
+      db.prepare(`
+        UPDATE pending_requests
+        SET status = 'APPROVED', resolved_at = ?
+        WHERE request_id = ?
+      `).run(Date.now(), request_id);
+
+      console.log(`⚡  QUICK APPROVED EDIT ACCESS: Request ${request_id} for ${normEmail}`);
+
+      return res.status(200).json({
+        message: `Edit access approved for ${normEmail}`,
+        request_id,
+        access_level: 'READ_WRITE'
+      });
+    }
+
+    // Standard Host Auth Request
+    if (!scope) {
+      return res.status(400).json({ error: 'scope is required.' });
+    }
+
+    const validScopes = ['ONE_TIME', 'CUSTOM_LEASE', 'FOREVER'];
+    if (!validScopes.includes(scope)) {
+      return res.status(400).json({ error: `scope must be one of: ${validScopes.join(', ')}` });
     }
 
     // Calculate lease duration
@@ -1761,11 +1908,22 @@ app.post('/api/approve-quick', (req, res) => {
       Date.now()
     );
 
+    const targetAccessLevel = (access_level === 'READ_WRITE') ? 'READ_WRITE' : 'READ_ONLY';
+
     if (request.requester_email) {
+      const normEmail = request.requester_email.toLowerCase().trim();
       db.prepare(`
-        INSERT OR IGNORE INTO access_list (drive_id, allowed_email, added_at)
-        VALUES (?, ?, ?)
-      `).run(request.drive_id, request.requester_email.toLowerCase().trim(), Date.now());
+        INSERT INTO access_list (drive_id, allowed_email, added_at, access_level)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(drive_id, allowed_email) DO UPDATE SET access_level = excluded.access_level
+      `).run(request.drive_id, normEmail, Date.now(), targetAccessLevel);
+
+      broadcastDriveSessionEvent(request.drive_id, {
+        type: 'ACCESS_LEVEL_CHANGED',
+        drive_id: request.drive_id,
+        user_email: normEmail,
+        access_level: targetAccessLevel
+      }, normEmail);
     }
 
     db.prepare(`
@@ -1782,12 +1940,13 @@ app.post('/api/approve-quick', (req, res) => {
       request_id
     );
 
-    console.log(`⚡  QUICK APPROVED: Request ${request_id} → ${scope} by ${authOwner || 'admin'}`);
+    console.log(`⚡  QUICK APPROVED: Request ${request_id} → ${scope} (${targetAccessLevel}) by ${authOwner || 'admin'}`);
 
     return res.status(200).json({
       message: `Request approved with scope: ${scope}`,
       request_id,
       scope,
+      access_level: targetAccessLevel,
       expires_at: lease.expiresAtISO,
       trust_scope: trustScope
     });
@@ -1829,6 +1988,15 @@ app.post('/api/deny-quick', (req, res) => {
       UPDATE pending_requests SET status = 'DENIED', resolved_at = ? WHERE request_id = ?
     `).run(Date.now(), request_id);
 
+    if (request.request_type === 'EDIT_ACCESS' && request.requester_email) {
+      const normEmail = request.requester_email.toLowerCase().trim();
+      broadcastDriveSessionEvent(request.drive_id, {
+        type: 'EDIT_ACCESS_DENIED',
+        drive_id: request.drive_id,
+        user_email: normEmail
+      }, normEmail);
+    }
+
     console.log(`⛔  QUICK DENIED: Request ${request_id} by ${authOwner || 'admin'}`);
 
     return res.status(200).json({
@@ -1847,12 +2015,91 @@ app.get(['/approve', '/approve/:request_id'], (req, res) => {
 });
 
 // ──────────────────────────────────────────────
+// Route: POST /api/request-edit-access
+// Read-only user requests promotion to Read & Write
+// ──────────────────────────────────────────────
+
+app.post('/api/request-edit-access', (req, res) => {
+  try {
+    const drive_id = req.body.drive_id;
+    const user_email = req.body.user_email || req.body.requester_email || req.body.email;
+    const hardware_fingerprint = req.body.hardware_fingerprint || req.body.fingerprint_hash || '';
+    if (!drive_id || !user_email) {
+      return res.status(400).json({ error: 'drive_id and user_email are required.' });
+    }
+
+    const normEmail = user_email.toLowerCase().trim();
+    const drive = db.prepare('SELECT * FROM drives WHERE drive_id = ?').get(drive_id);
+    if (!drive) {
+      return res.status(404).json({ error: 'Drive not found.' });
+    }
+
+    if (drive.status === 'LOST') {
+      return res.status(403).json({ error: 'Storage vault is revoked.' });
+    }
+
+    // Drive owner already has full edit access
+    if (drive.owner_email.toLowerCase().trim() === normEmail) {
+      return res.status(200).json({
+        status: 'GRANTED',
+        access_level: 'READ_WRITE',
+        message: 'Owner already has full edit access.'
+      });
+    }
+
+    // Check if user already has READ_WRITE in access_list
+    const accessRow = db.prepare('SELECT access_level FROM access_list WHERE drive_id = ? AND allowed_email = ?').get(drive_id, normEmail);
+    if (accessRow && accessRow.access_level === 'READ_WRITE') {
+      return res.status(200).json({
+        status: 'GRANTED',
+        access_level: 'READ_WRITE',
+        message: 'You already have read and write access.'
+      });
+    }
+
+    const fingerprint_hash = hardware_fingerprint ? normaliseFingerprint(hardware_fingerprint) : '';
+
+    // Check if an edit request is already pending
+    const existing = db.prepare(`
+      SELECT * FROM pending_requests
+      WHERE drive_id = ? AND requester_email = ? AND request_type = 'EDIT_ACCESS' AND status = 'PENDING'
+    `).get(drive_id, normEmail);
+
+    if (existing) {
+      return res.status(202).json({
+        status: 'PENDING',
+        request_id: existing.request_id,
+        message: 'Edit access request is already pending owner approval.'
+      });
+    }
+
+    const requestId = 'req_edit_' + crypto.randomBytes(4).toString('hex');
+    db.prepare(`
+      INSERT INTO pending_requests
+        (request_id, drive_id, hardware_fingerprint, requester_email, status, request_type, created_at)
+      VALUES (?, ?, ?, ?, 'PENDING', 'EDIT_ACCESS', ?)
+    `).run(requestId, drive_id, fingerprint_hash, normEmail, Date.now());
+
+    console.log(`📝 Edit access requested by ${normEmail} for drive ${drive_id} (Req: ${requestId})`);
+
+    return res.status(202).json({
+      status: 'PENDING',
+      request_id: requestId,
+      message: 'Edit access requested. The vault owner has been notified.'
+    });
+  } catch (err) {
+    console.error('Request-edit-access error:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// ──────────────────────────────────────────────
 // Route: POST /api/sharing/add-user
 // ──────────────────────────────────────────────
 
 app.post('/api/sharing/add-user', requireAdminKey, (req, res) => {
   try {
-    const { drive_id, email } = req.body;
+    const { drive_id, email, access_level } = req.body;
     if (!drive_id || !email) {
       return res.status(400).json({ error: 'drive_id and email are required.' });
     }
@@ -1871,18 +2118,86 @@ app.post('/api/sharing/add-user', requireAdminKey, (req, res) => {
     }
 
     const normalEmail = email.toLowerCase().trim();
+    const targetLevel = (access_level === 'READ_WRITE') ? 'READ_WRITE' : 'READ_ONLY';
+
     db.prepare(`
-      INSERT OR IGNORE INTO access_list (drive_id, allowed_email, added_at)
-      VALUES (?, ?, ?)
-    `).run(drive_id, normalEmail, Date.now());
+      INSERT INTO access_list (drive_id, allowed_email, added_at, access_level)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(drive_id, allowed_email) DO UPDATE SET access_level = excluded.access_level
+    `).run(drive_id, normalEmail, Date.now(), targetLevel);
+
+    // If client session is active, broadcast live permission change
+    broadcastDriveSessionEvent(drive_id, {
+      type: 'ACCESS_LEVEL_CHANGED',
+      drive_id,
+      user_email: normalEmail,
+      access_level: targetLevel
+    }, normalEmail);
 
     return res.status(201).json({
-      message: `User ${normalEmail} added to access list.`,
+      message: `User ${normalEmail} added to access list (${targetLevel}).`,
       drive_id,
-      email: normalEmail
+      email: normalEmail,
+      access_level: targetLevel
     });
   } catch (err) {
     console.error('Add-user error:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// ──────────────────────────────────────────────
+// Route: POST /api/sharing/update-user-access
+// ──────────────────────────────────────────────
+
+app.post('/api/sharing/update-user-access', requireAdminKey, (req, res) => {
+  try {
+    const { drive_id, email, access_level } = req.body;
+    if (!drive_id || !email || !access_level) {
+      return res.status(400).json({ error: 'drive_id, email, and access_level are required.' });
+    }
+
+    const targetLevel = (access_level === 'READ_WRITE') ? 'READ_WRITE' : 'READ_ONLY';
+    const normalEmail = email.toLowerCase().trim();
+
+    const drive = db.prepare('SELECT owner_email FROM drives WHERE drive_id = ?').get(drive_id);
+    if (!drive) {
+      return res.status(404).json({ error: 'Drive not found.' });
+    }
+
+    const authOwner = getOwnerEmail(req);
+    const adminKey = req.headers['x-admin-key'];
+    const isAdmin = adminKey && adminKey === ADMIN_KEY;
+
+    if (!isAdmin && (!authOwner || drive.owner_email.toLowerCase().trim() !== authOwner.toLowerCase().trim())) {
+      return res.status(403).json({ error: 'Unauthorised. Only the verified drive owner can manage sharing.' });
+    }
+
+    if (drive.owner_email.toLowerCase().trim() === normalEmail) {
+      return res.status(400).json({ error: 'Cannot modify owner permissions.' });
+    }
+
+    db.prepare(`
+      UPDATE access_list SET access_level = ?
+      WHERE drive_id = ? AND allowed_email = ?
+    `).run(targetLevel, drive_id, normalEmail);
+
+    // Broadcast live permission change to client session if active
+    broadcastDriveSessionEvent(drive_id, {
+      type: 'ACCESS_LEVEL_CHANGED',
+      drive_id,
+      user_email: normalEmail,
+      access_level: targetLevel
+    }, normalEmail);
+
+    return res.status(200).json({
+      message: `Updated ${normalEmail} permissions to ${targetLevel}.`,
+      drive_id,
+      email: normalEmail,
+      access_level: targetLevel
+    });
+  } catch (err) {
+    console.error('Update-user-access error:', err);
     return res.status(500).json({ error: 'Internal server error.' });
   }
 });
@@ -1921,6 +2236,15 @@ app.post('/api/sharing/remove-user', requireAdminKey, (req, res) => {
     db.prepare(
       'DELETE FROM access_list WHERE drive_id = ? AND allowed_email = ?'
     ).run(drive_id, normalEmail);
+
+    // Broadcast access revocation to live session via SSE to immediately enforce read-only
+    broadcastDriveSessionEvent(drive_id, {
+      type: 'ACCESS_LEVEL_CHANGED',
+      drive_id,
+      user_email: normalEmail,
+      access_level: 'READ_ONLY',
+      revoked: true
+    }, normalEmail);
 
     return res.status(200).json({
       message: `User ${normalEmail} removed from access list.`,
@@ -2070,7 +2394,7 @@ app.get('/api/status/:drive_id', (req, res) => {
     if (!drive) return res.status(404).json({ error: 'Drive not found.' });
 
     const accessList = db.prepare(
-      'SELECT allowed_email, added_at FROM access_list WHERE drive_id = ?'
+      'SELECT allowed_email, added_at, access_level FROM access_list WHERE drive_id = ?'
     ).all(drive_id);
 
     const trustedDevices = db.prepare(
@@ -2085,7 +2409,11 @@ app.get('/api/status/:drive_id', (req, res) => {
       ...drive,
       created_at:      new Date(drive.created_at).toISOString(),
       updated_at:      new Date(drive.updated_at).toISOString(),
-      access_list:     accessList.map(a => ({ email: a.allowed_email, added_at: new Date(a.added_at).toISOString() })),
+      access_list:     accessList.map(a => ({
+        email: a.allowed_email,
+        added_at: new Date(a.added_at).toISOString(),
+        access_level: a.access_level || 'READ_ONLY'
+      })),
       trusted_devices: trustedDevices.map(d => ({
         fingerprint: d.hardware_fingerprint,
         email:       d.user_email,
@@ -2285,7 +2613,7 @@ app.get('/api/dashboard/pending', requireAdminKey, (req, res) => {
     if (isAdmin || !ownerEmail) {
       pending = db.prepare(`
         SELECT pr.request_id, pr.drive_id, pr.hardware_fingerprint, pr.requester_email,
-               pr.status, pr.granted_scope, pr.expires_at, pr.created_at, pr.resolved_at,
+               pr.status, pr.request_type, pr.granted_scope, pr.expires_at, pr.created_at, pr.resolved_at,
                d.label as drive_label, d.owner_email
         FROM pending_requests pr
         LEFT JOIN drives d ON pr.drive_id = d.drive_id
@@ -2295,7 +2623,7 @@ app.get('/api/dashboard/pending', requireAdminKey, (req, res) => {
     } else {
       pending = db.prepare(`
         SELECT pr.request_id, pr.drive_id, pr.hardware_fingerprint, pr.requester_email,
-               pr.status, pr.granted_scope, pr.expires_at, pr.created_at, pr.resolved_at,
+               pr.status, pr.request_type, pr.granted_scope, pr.expires_at, pr.created_at, pr.resolved_at,
                d.label as drive_label, d.owner_email
         FROM pending_requests pr
         JOIN drives d ON pr.drive_id = d.drive_id

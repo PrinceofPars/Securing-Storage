@@ -121,7 +121,8 @@ def save_lease_token(
     issued_at: int,
     expires_at: int,
     user_email: str = '',
-    vault_path: Optional[Path] = None
+    vault_path: Optional[Path] = None,
+    access_level: str = 'READ_ONLY'
 ) -> None:
     """Encrypt and persist the lease token into vault.enc header or lease.tok."""
     inner_data = {
@@ -131,7 +132,8 @@ def save_lease_token(
         'issued_at':       issued_at,
         'expires_at':      expires_at,
         'jwt':             jwt_token,
-        'user_email':      user_email
+        'user_email':      user_email,
+        'access_level':    access_level
     }
     plaintext = json.dumps(inner_data, separators=(',', ':')).encode('utf-8')
 
@@ -257,6 +259,20 @@ def load_lease_token(
         return None
 
 
+def get_lease_access_level(
+    lease_path: Optional[Path],
+    k_local: bytes,
+    drive_id: str,
+    fingerprint_hash: str,
+    vault_path: Optional[Path] = None
+) -> str:
+    """Retrieve the access level ('READ_WRITE' or 'READ_ONLY') stored in the lease token."""
+    lease = load_lease_token(lease_path, k_local, drive_id, vault_path=vault_path, fingerprint_hash=fingerprint_hash)
+    if lease and isinstance(lease, dict):
+        return lease.get('access_level', 'READ_ONLY')
+    return 'READ_ONLY'
+
+
 def clear_lease_token(
     lease_path: Optional[Path] = None,
     vault_path: Optional[Path] = None
@@ -322,6 +338,7 @@ def online_auth(
             jwt_token       = data.get('lease_token', '')
             expires_at_unix = data.get('expires_at_unix', int(time.time()) + 7 * 86400)
             issued_at       = int(time.time())
+            access_level    = data.get('access_level', 'READ_ONLY')
 
             resolved_email  = (data.get('user_email') or user_email or '').strip()
 
@@ -335,17 +352,18 @@ def online_auth(
                 issued_at        = issued_at,
                 expires_at       = expires_at_unix,
                 user_email       = resolved_email,
-                vault_path       = vault_path
+                vault_path       = vault_path,
+                access_level     = access_level
             )
 
             scope = data.get('trust_scope', 'LEASE')
-            logger.info(f"Online auth GRANTED for drive {drive_id} ({scope})")
-            return 'GRANTED', cloud_key_share, f"Access granted ({scope}).", None
+            logger.info(f"Online auth GRANTED for drive {drive_id} ({scope}, {access_level})")
+            return 'GRANTED', cloud_key_share, f"Access granted ({scope}).", None, access_level
 
         elif response.status_code == 202 and data.get('status') == 'PENDING_APPROVAL':
             request_id = data.get('request_id', '')
             logger.info(f"Online auth PENDING for drive {drive_id}, request: {request_id}")
-            return 'PENDING', None, data.get('message', 'Waiting for approval.'), request_id
+            return 'PENDING', None, data.get('message', 'Waiting for approval.'), request_id, 'READ_ONLY'
 
         elif response.status_code == 403:
             status  = data.get('status', 'DENIED')
@@ -353,23 +371,23 @@ def online_auth(
             logger.warning(f"Online auth DENIED: {status} — {message}")
             if status == 'LOCKED':
                 clear_lease_token(lease_path=lease_path, vault_path=vault_path)
-                return 'LOCKED', None, message, None
-            return 'DENIED', None, message, None
+                return 'LOCKED', None, message, None, 'READ_ONLY'
+            return 'DENIED', None, message, None, 'READ_ONLY'
 
         elif response.status_code == 404:
             clear_lease_token(lease_path=lease_path, vault_path=vault_path)
-            return 'ERROR', None, 'Drive ID not registered on server.', None
+            return 'ERROR', None, 'Drive ID not registered on server.', None, 'READ_ONLY'
 
         else:
             err_msg = data.get('error') or data.get('message') or f"Server returned {response.status_code}"
-            return 'ERROR', None, err_msg, None
+            return 'ERROR', None, err_msg, None, 'READ_ONLY'
 
     except requests.exceptions.ConnectionError:
-        return 'ERROR', None, f"Cannot connect to server at {api_base_url}", None
+        return 'ERROR', None, f"Cannot connect to server at {api_base_url}", None, 'READ_ONLY'
     except requests.exceptions.Timeout:
-        return 'ERROR', None, "Server request timed out.", None
+        return 'ERROR', None, "Server request timed out.", None, 'READ_ONLY'
     except Exception as e:
-        return 'ERROR', None, f"Authentication error: {e}", None
+        return 'ERROR', None, f"Authentication error: {e}", None, 'READ_ONLY'
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -422,7 +440,7 @@ def poll_request_status(
     lease_path: Optional[Path] = None,
     vault_path: Optional[Path] = None,
     timeout: int = 10
-) -> Tuple[str, Optional[str], Optional[str]]:
+) -> Tuple[str, Optional[str], Optional[str], str]:
     """
     Poll the backend for the status of a pending approval request.
 
@@ -442,13 +460,14 @@ def poll_request_status(
         status = data.get('status', '')
 
         if status == 'PENDING':
-            return 'PENDING', None, 'Waiting for owner approval...'
+            return 'PENDING', None, 'Waiting for owner approval...', 'READ_ONLY'
 
         elif status == 'APPROVED':
             cloud_key_share = data.get('cloud_key_share', '')
             jwt_token       = data.get('lease_token', '')
             expires_at_unix = data.get('expires_at_unix', int(time.time()) + 7 * 86400)
             scope           = data.get('granted_scope', 'CUSTOM_LEASE')
+            access_level    = data.get('access_level', 'READ_ONLY')
 
             resolved_email = (data.get('user_email') or user_email or '').strip()
 
@@ -464,19 +483,20 @@ def poll_request_status(
                     issued_at        = int(time.time()),
                     expires_at       = expires_at_unix,
                     user_email       = resolved_email,
-                    vault_path       = vault_path
+                    vault_path       = vault_path,
+                    access_level     = access_level
                 )
 
-            return 'APPROVED', cloud_key_share, f"Approved ({scope})"
+            return 'APPROVED', cloud_key_share, f"Approved ({scope})", access_level
 
         elif status == 'DENIED':
-            return 'DENIED', None, 'Access request denied by drive owner.'
+            return 'DENIED', None, 'Access request denied by drive owner.', 'READ_ONLY'
 
         else:
-            return 'ERROR', None, f"Unknown status: {status}"
+            return 'ERROR', None, f"Unknown status: {status}", 'READ_ONLY'
 
     except Exception as e:
-        return 'ERROR', None, f"Poll error: {e}"
+        return 'ERROR', None, f"Poll error: {e}", 'READ_ONLY'
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -557,7 +577,7 @@ def offline_lease_check(
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Main Entry: Smart Auth (Online / Offline)
-# Returns: (result, cloud_key_share, message, was_online, request_id)
+# Returns: (result, cloud_key_share, message, was_online, request_id, access_level)
 # result: 'GRANTED' | 'LOCKED' | 'DENIED' | 'PENDING' | 'OFFLINE_GRANTED' | 'OFFLINE_DENIED'
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -570,32 +590,32 @@ def authenticate(
     lease_path: Optional[Path] = None,
     vault_path: Optional[Path] = None,
     auth_token: Optional[str] = None
-) -> Tuple[str, Optional[str], str, bool, Optional[str]]:
+) -> Tuple[str, Optional[str], str, bool, Optional[str], str]:
     """
     High-level authentication dispatcher.
 
     Returns:
-        (result, cloud_key_share, message, was_online, request_id)
+        (result, cloud_key_share, message, was_online, request_id, access_level)
     """
     is_online = check_internet_connectivity()
 
     if is_online:
         logger.info("Network detected — attempting online authentication...")
-        result, cks, message, request_id = online_auth(
+        result, cks, message, request_id, access_level = online_auth(
             api_base_url, drive_id, fingerprint_hash, user_email,
             k_local, lease_path=lease_path, vault_path=vault_path,
             auth_token=auth_token
         )
 
         if result == 'GRANTED':
-            return 'GRANTED', cks, message, True, None
+            return 'GRANTED', cks, message, True, None, access_level
         elif result == 'PENDING':
-            return 'PENDING', None, message, True, request_id
+            return 'PENDING', None, message, True, request_id, 'READ_ONLY'
         elif result == 'LOCKED':
             clear_lease_token(lease_path=lease_path, vault_path=vault_path)
-            return 'LOCKED', None, message, True, None
+            return 'LOCKED', None, message, True, None, 'READ_ONLY'
         elif result == 'DENIED':
-            return 'DENIED', None, message, True, None
+            return 'DENIED', None, message, True, None, 'READ_ONLY'
         else:
             # Network error during online attempt — verify if drive was revoked
             is_net, is_rev, rev_msg = check_drive_revocation(
@@ -603,7 +623,7 @@ def authenticate(
             )
             if is_net and is_rev:
                 clear_lease_token(lease_path=lease_path, vault_path=vault_path)
-                return 'LOCKED', None, f"Drive revoked on server: {rev_msg}", True, None
+                return 'LOCKED', None, f"Drive revoked on server: {rev_msg}", True, None, 'READ_ONLY'
 
             # Try offline lease
             logger.info(f"Online auth failed ({message}), trying offline lease...")
@@ -611,16 +631,86 @@ def authenticate(
                 lease_path, k_local, drive_id, fingerprint_hash, vault_path=vault_path
             )
             if success:
-                return 'OFFLINE_GRANTED', cks, offline_msg, False, None
+                acc_lvl = get_lease_access_level(lease_path, k_local, drive_id, fingerprint_hash, vault_path=vault_path)
+                return 'OFFLINE_GRANTED', cks, offline_msg, False, None, acc_lvl
 
             # Combine the online failure reason with offline status so user knows why it failed
             combined_err = f"{message} (Offline check: {offline_msg})" if message else offline_msg
-            return 'OFFLINE_DENIED', None, combined_err, False, None
+            return 'OFFLINE_DENIED', None, combined_err, False, None, 'READ_ONLY'
     else:
         logger.info("No network — checking offline lease...")
         success, cks, msg = offline_lease_check(
             lease_path, k_local, drive_id, fingerprint_hash, vault_path=vault_path
         )
         if success:
-            return 'OFFLINE_GRANTED', cks, msg, False, None
-        return 'OFFLINE_DENIED', None, msg, False, None
+            acc_lvl = get_lease_access_level(lease_path, k_local, drive_id, fingerprint_hash, vault_path=vault_path)
+            return 'OFFLINE_GRANTED', cks, msg, False, None, acc_lvl
+        return 'OFFLINE_DENIED', None, msg, False, None, 'READ_ONLY'
+
+
+def update_lease_access_level(
+    lease_path: Optional[Path],
+    k_local: bytes,
+    drive_id: str,
+    fingerprint_hash: str,
+    vault_path: Optional[Path] = None,
+    new_access_level: str = 'READ_ONLY'
+) -> bool:
+    """Update only the access_level stored in the local lease token."""
+    try:
+        lease = load_lease_token(lease_path, k_local, drive_id, vault_path=vault_path, fingerprint_hash=fingerprint_hash)
+        if not lease:
+            return False
+        save_lease_token(
+            lease_path       = lease_path,
+            k_local          = k_local,
+            drive_id         = drive_id,
+            fingerprint_hash = fingerprint_hash,
+            cloud_key_share  = lease.get('cloud_key_share', ''),
+            jwt_token        = lease.get('jwt', ''),
+            issued_at        = lease.get('issued_at', int(time.time())),
+            expires_at       = lease.get('expires_at', int(time.time()) + 86400),
+            user_email       = lease.get('user_email', ''),
+            vault_path       = vault_path,
+            access_level     = new_access_level
+        )
+        logger.info(f"Lease access level updated to {new_access_level}")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to update lease access level: {e}")
+        return False
+
+
+def request_edit_access(
+    api_base_url: str,
+    drive_id: str,
+    fingerprint_hash: str,
+    user_email: str,
+    auth_token: Optional[str] = None,
+    timeout: int = 15
+) -> Tuple[bool, str, Optional[str]]:
+    """
+    Request elevation to Read & Write access for the current session.
+    Returns (success, message, request_id).
+    """
+    url = f"{api_base_url.rstrip('/')}/api/request-edit-access"
+    payload = {
+        'drive_id': drive_id,
+        'hardware_fingerprint': fingerprint_hash,
+        'user_email': user_email
+    }
+    headers = {'Content-Type': 'application/json'}
+    if auth_token:
+        headers['Authorization'] = f'Bearer {auth_token}'
+        payload['auth_token'] = auth_token
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=timeout)
+        data = response.json()
+        if response.status_code in (200, 202):
+            return True, data.get('message', 'Edit access request submitted.'), data.get('request_id')
+        else:
+            err = data.get('error') or data.get('message') or f"Server error: {response.status_code}"
+            return False, err, None
+    except Exception as e:
+        return False, f"Connection error: {e}", None

@@ -727,6 +727,15 @@
 
       const isOwner = Boolean(currentAuthUser && req.owner_email && currentAuthUser.toLowerCase() === req.owner_email.toLowerCase());
 
+      if (req.request_type === 'EDIT_ACCESS') {
+        const titleEl = document.querySelector('.card-title');
+        const descEl = document.querySelector('.card-desc');
+        if (titleEl) titleEl.textContent = 'Edit Access Elevation Request';
+        if (descEl) descEl.textContent = 'Review and grant Read & Write permission to user';
+        statusChip.innerText = 'Edit Request';
+        statusChip.className = 'status-chip info';
+      }
+
       if (req.status !== 'PENDING') {
         actionButtons.style.display = 'none';
         authSection.style.display = 'block';
@@ -734,7 +743,7 @@
           <div class="auth-gate-box">
             <div style="font-size: 13px; font-weight: 600; color: var(--text-main); margin-bottom: 4px;">Request ${req.status}</div>
             <div style="font-size: 12px; color: var(--text-muted); line-height: 1.4;">
-              This host access request has already been ${req.status.toLowerCase()}. No further decisions can be made.
+              This access request has already been ${req.status.toLowerCase()}. No further decisions can be made.
             </div>
           </div>
         `;
@@ -798,6 +807,44 @@
             <a href="/auth/google?switch=true&req=${encodeURIComponent(currentRequestId)}" class="switch-link">Switch</a>
           </div>
         `;
+
+        if (req.request_type === 'EDIT_ACCESS') {
+          actionButtons.innerHTML = `
+            <div style="padding: 10px 12px; margin-bottom: 12px; background: rgba(59,130,246,0.06); border: 1px solid rgba(59,130,246,0.25); border-radius: var(--radius-sm); font-size: 12px; color: var(--text-main);">
+              <strong>${escapeHtml(req.requester_email)}</strong> is currently connected in <strong>Read-Only</strong> mode and is requesting elevation to <strong>Read &amp; Write</strong> access.
+            </div>
+            <button class="btn-action primary" onclick="submitDecision('EDIT_APPROVE')">
+              Grant Read &amp; Write Access
+            </button>
+            <button class="btn-action danger" onclick="submitDecision('DENY')">
+              Reject Request (Keep Read-Only)
+            </button>
+          `;
+        } else {
+          actionButtons.innerHTML = `
+            <div style="margin-bottom: 10px; padding: 10px 12px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);">
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-main);">
+                <input type="checkbox" id="chkReadWrite" style="accent-color: var(--accent); cursor: pointer; width: 16px; height: 16px;">
+                <span>Grant Read &amp; Write Access <span style="font-size: 11px; color: var(--text-dim);">(Default: Read-Only)</span></span>
+              </label>
+            </div>
+            <button class="btn-action" onclick="submitDecision('ONE_TIME')">
+              Authorize One-Time (12 Hours)
+            </button>
+            <button class="btn-action" onclick="submitDecision('CUSTOM_LEASE', 24)">
+              Issue 24-Hour Host Lease
+            </button>
+            <button class="btn-action" onclick="submitDecision('CUSTOM_LEASE', 168)">
+              Issue 7-Day Host Lease
+            </button>
+            <button class="btn-action primary" onclick="submitDecision('FOREVER')">
+              Trust Host Permanently
+            </button>
+            <button class="btn-action danger" onclick="submitDecision('DENY')">
+              Reject &amp; Revoke
+            </button>
+          `;
+        }
         actionButtons.style.display = 'flex';
       }
 
@@ -814,9 +861,14 @@
           request_id: currentRequestId
         };
 
-        if (action !== 'DENY') {
+        if (action === 'EDIT_APPROVE') {
+          body.scope = 'FOREVER';
+          body.access_level = 'READ_WRITE';
+        } else if (action !== 'DENY') {
           body.scope = action;
           if (hours) body.lease_hours = hours;
+          const chk = document.getElementById('chkReadWrite');
+          body.access_level = (chk && chk.checked) ? 'READ_WRITE' : 'READ_ONLY';
         }
 
         const res = await fetch(endpoint, {
@@ -833,10 +885,21 @@
           return;
         }
 
-        showSuccess(
-          action === 'DENY' ? 'Authorization Denied' : 'Host Authorized', 
-          action === 'DENY' ? 'The requesting host device has been rejected.' : `Granted scope: ${action} (${hours ? hours + 'h' : 'Permanent/12h'}). Cloud key share delivered.`
-        );
+        let successTitle = 'Host Authorized';
+        let successMsg = `Granted scope: ${action} (${hours ? hours + 'h' : 'Permanent/12h'}). Cloud key share delivered.`;
+
+        if (action === 'DENY') {
+          successTitle = 'Authorization Denied';
+          successMsg = 'The access request has been rejected.';
+        } else if (action === 'EDIT_APPROVE') {
+          successTitle = 'Edit Access Granted';
+          successMsg = 'User has been upgraded to Read & Write permissions in real-time.';
+        } else {
+          const grantedLvl = body.access_level === 'READ_WRITE' ? 'Read & Write' : 'Read-Only';
+          successMsg += ` (Permissions: ${grantedLvl})`;
+        }
+
+        showSuccess(successTitle, successMsg);
 
       } catch (err) {
         alert("Network failure: " + err.message);

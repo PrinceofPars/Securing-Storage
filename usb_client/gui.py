@@ -952,7 +952,7 @@ class USBKillswitchApp(ctk.CTk):
                 drive_id = config['drive_id']
                 auth_tok = token or getattr(self, '_auth_token', None)
 
-                result, cks, msg, was_online, request_id = lm.authenticate(
+                result, cks, msg, was_online, request_id, access_level = lm.authenticate(
                     api_url, drive_id, fp, email, k_local,
                     lease_path=LEASE_FILE, vault_path=VAULT_FILE,
                     auth_token=auth_tok
@@ -963,7 +963,7 @@ class USBKillswitchApp(ctk.CTk):
                     self.session['k_local'] = k_local
                     self._current_user_email = email
                     mode = "Online Verified" if was_online else "Offline Lease"
-                    self.after(0, lambda: self._load_vault_workspace(k_local, cks, mode, msg, user_email=email))
+                    self.after(0, lambda: self._load_vault_workspace(k_local, cks, mode, msg, user_email=email, access_level=access_level))
 
                 elif result == 'PENDING':
                     self._current_user_email = email
@@ -992,7 +992,7 @@ class USBKillswitchApp(ctk.CTk):
         if hasattr(self, 'unlock_status') and self.unlock_status.winfo_exists():
             self.unlock_status.configure(text=msg, text_color=COLORS['danger'])
 
-    def _load_vault_workspace(self, k_local, cloud_key_hex, mode, msg, user_email=''):
+    def _load_vault_workspace(self, k_local, cloud_key_hex, mode, msg, user_email='', access_level=None):
         def _set_status(txt, color):
             if hasattr(self, 'wait_status') and self.wait_status.winfo_exists():
                 self.wait_status.configure(text=txt, text_color=color)
@@ -1028,14 +1028,30 @@ class USBKillswitchApp(ctk.CTk):
 
                 # Resolve active user email
                 resolved_email = (user_email or getattr(self, '_current_user_email', '')).strip()
+                cfg = load_config()
                 if not resolved_email:
-                    cfg = load_config()
                     if cfg:
                         lease_info = lm.load_lease_token(LEASE_FILE, k_local, cfg.get('drive_id', ''), vault_path=VAULT_FILE)
                         if lease_info and lease_info.get('user_email'):
                             resolved_email = lease_info.get('user_email').strip()
                         elif cfg.get('owner_email'):
                             resolved_email = cfg.get('owner_email').strip()
+
+                owner_email = (
+                    (cfg.get('owner_email') if cfg else '') or
+                    manifest.get('drive_metadata', {}).get('owner_email', '')
+                ).strip().lower()
+                is_owner = bool(owner_email and resolved_email and owner_email == resolved_email.lower())
+                if not owner_email:
+                    is_owner = True
+
+                if is_owner:
+                    effective_level = 'READ_WRITE'
+                elif access_level:
+                    effective_level = str(access_level).upper()
+                else:
+                    drive_id = cfg.get('drive_id', '') if cfg else ''
+                    effective_level = lm.get_lease_access_level(LEASE_FILE, k_local, drive_id, vault_path=VAULT_FILE)
 
                 self.session['unlocked']        = True
                 self.session['manifest']        = manifest
@@ -1047,6 +1063,7 @@ class USBKillswitchApp(ctk.CTk):
                 self.session['is_full_extract'] = False
                 self.session['session_id']      = str(uuid.uuid4())
                 self.session['user_email']      = resolved_email or 'anonymous@user'
+                self.session['access_level']    = effective_level
 
                 # Start real-time SSE listener in background (Option A)
                 self._start_sse_listener()
@@ -1219,7 +1236,7 @@ class USBKillswitchApp(ctk.CTk):
         def poll_loop():
             while not self._poll_stop.is_set():
                 try:
-                    result, cks, msg = lm.poll_request_status(
+                    result, cks, msg, access_level = lm.poll_request_status(
                         api_url, request_id, drive_id,
                         fingerprint, email, k_local,
                         lease_path=LEASE_FILE, vault_path=VAULT_FILE
@@ -1227,7 +1244,7 @@ class USBKillswitchApp(ctk.CTk):
 
                     if result == 'APPROVED':
                         self._poll_stop.set()
-                        self.after(0, lambda: self._on_approval_granted(k_local, cks, msg))
+                        self.after(0, lambda: self._on_approval_granted(k_local, cks, msg, access_level))
                         return
                     elif result == 'DENIED':
                         self._poll_stop.set()
@@ -1267,13 +1284,13 @@ class USBKillswitchApp(ctk.CTk):
         self._poll_stop.set()
         self._show_unlock_screen()
 
-    def _on_approval_granted(self, k_local, cloud_key_hex, msg):
+    def _on_approval_granted(self, k_local, cloud_key_hex, msg, access_level='READ_ONLY'):
         self._focus_window()
         self.wait_progress.stop()
         self.wait_status.configure(text=f"Authorization granted: {msg}", text_color=COLORS['success'])
         self.update_idletasks()
         email = getattr(self, '_current_user_email', '')
-        self.after(400, lambda: self._load_vault_workspace(k_local, cloud_key_hex, "Authorized", msg, user_email=email))
+        self.after(400, lambda: self._load_vault_workspace(k_local, cloud_key_hex, "Authorized", msg, user_email=email, access_level=access_level))
 
     def _on_approval_denied(self):
         self._focus_window()
@@ -1324,9 +1341,14 @@ class USBKillswitchApp(ctk.CTk):
                                            text_color=COLORS['success'])
         self.ws_status_text.pack(side="left")
 
-        # Timer (Session Time Keeper)
+        access_level = self.session.get('access_level', 'READ_ONLY')
+
+        # Action Buttons on Right
+        self.ws_actions_frame = ctk.CTkFrame(top_inner, fg_color="transparent")
+        self.ws_actions_frame.pack(side="right")
+
         self.ws_timer = ctk.CTkLabel(
-            top_inner, text="Session: 00:00:00", height=32, width=145,
+            self.ws_actions_frame, text="Session: 00:00:00", height=32, width=145,
             fg_color="#f8fafc", corner_radius=4,
             border_width=1, border_color="#cbd5e1",
             font=ctk.CTkFont(family="Consolas", size=11, weight="bold"),
@@ -1334,19 +1356,38 @@ class USBKillswitchApp(ctk.CTk):
         )
         self.ws_timer.pack(side="right", padx=(10, 0))
 
-        # Lock Command Actions
-        ctk.CTkButton(top_inner, text="Save & Lock Vault", height=32, width=130,
-                      font=ctk.CTkFont(size=11, weight="bold"),
-                      fg_color=COLORS['accent'], hover_color=COLORS['accent_hover'],
-                      corner_radius=4,
-                      command=self._do_lock_and_save).pack(side="right", padx=(10, 0))
+        self.btn_exit = ctk.CTkButton(
+            self.ws_actions_frame,
+            text="Exit Vault" if access_level == 'READ_ONLY' else "Discard & Exit",
+            height=32, width=110,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLORS['danger_bg'], hover_color=COLORS['danger_hover'],
+            border_width=1, border_color=COLORS['danger'],
+            text_color=COLORS['danger'], corner_radius=4,
+            command=self._do_lock_no_save
+        )
+        self.btn_exit.pack(side="right", padx=(10, 0))
 
-        ctk.CTkButton(top_inner, text="Discard & Exit", height=32, width=110,
-                      font=ctk.CTkFont(size=11),
-                      fg_color=COLORS['danger_bg'], hover_color=COLORS['danger_hover'],
-                      border_width=1, border_color=COLORS['danger'],
-                      text_color=COLORS['danger'], corner_radius=4,
-                      command=self._do_lock_no_save).pack(side="right", padx=(10, 0))
+        self.btn_save_lock = ctk.CTkButton(
+            self.ws_actions_frame, text="Save & Lock Vault", height=32, width=130,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=COLORS['accent'], hover_color=COLORS['accent_hover'],
+            corner_radius=4,
+            command=self._do_lock_and_save
+        )
+
+        self.btn_request_edit = ctk.CTkButton(
+            self.ws_actions_frame, text="Request Edit Access", height=32, width=145,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=COLORS['warning'], hover_color="#d97706",
+            text_color="#000000", corner_radius=4,
+            command=self._do_request_edit_access
+        )
+
+        if access_level == 'READ_WRITE':
+            self.btn_save_lock.pack(side="right", padx=(10, 0))
+        else:
+            self.btn_request_edit.pack(side="right", padx=(10, 0))
 
         # Main Workspace Container
         main = ctk.CTkFrame(self, fg_color="transparent")
@@ -1464,11 +1505,28 @@ class USBKillswitchApp(ctk.CTk):
                      font=ctk.CTkFont(family="Consolas", size=10),
                      text_color=COLORS['text_muted']).pack(side="left")
 
+        # Bottom Read-Only Badge (shown only for Read-Only sessions, NOT for Read & Write)
+        self.lbl_read_only = ctk.CTkLabel(
+            bottom_inner, text="Read only",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS['warning'],
+            fg_color=COLORS['warning_bg'],
+            corner_radius=4, padx=8, pady=2
+        )
+
+        footer_text = (
+            "On-demand session ready — modifications are incrementally packaged upon lock"
+            if access_level == 'READ_WRITE'
+            else "Read-only session active — saving is disabled"
+        )
         self.ws_status_footer = ctk.CTkLabel(bottom_inner,
-                                             text="On-demand session ready — modifications are incrementally packaged upon lock",
+                                             text=footer_text,
                                              font=ctk.CTkFont(size=10),
                                              text_color=COLORS['text_muted'])
         self.ws_status_footer.pack(side="right")
+
+        if access_level == 'READ_ONLY':
+            self.lbl_read_only.pack(side="right", padx=(0, 10))
 
         self._start_timer()
 
@@ -1690,6 +1748,14 @@ class USBKillswitchApp(ctk.CTk):
         if not self.session.get('unlocked'):
             return
 
+        if self.session.get('access_level') == 'READ_ONLY':
+            messagebox.showwarning(
+                "Read-Only Session",
+                "Your permissions for this session are Read-Only.\n\n"
+                "You cannot save modifications to the vault."
+            )
+            return
+
         working_dir = self.session.get('working_dir')
         manifest = self.session.get('manifest')
         k_local = self.session.get('k_local')
@@ -1701,6 +1767,14 @@ class USBKillswitchApp(ctk.CTk):
 
         def do_save():
             try:
+                if self.session.get('access_level') == 'READ_ONLY':
+                    logger.warning("Aborting save: session access level is READ_ONLY.")
+                    self.after(0, lambda: messagebox.showwarning(
+                        "Read-Only Session",
+                        "Write access is revoked for this session. Changes cannot be saved."
+                    ))
+                    return
+
                 # Pre-commit revocation check if online:
                 # If network is available, check GET /api/status/:drive_id before committing changes.
                 # If marked as lost on server, discard changes, shred temp files, and trigger killswitch!
@@ -1754,6 +1828,115 @@ class USBKillswitchApp(ctk.CTk):
             self.after(0, self._lock_cleanup_and_exit)
 
         threading.Thread(target=do_wipe, daemon=True).start()
+
+    def _do_request_edit_access(self):
+        """Submit a request to the vault owner for edit access."""
+        if not self.session.get('unlocked'):
+            return
+
+        cfg = load_config()
+        if not cfg:
+            messagebox.showerror("Error", "Drive configuration not found.")
+            return
+
+        api_url = get_api_url(cfg)
+        drive_id = cfg.get('drive_id', '')
+        fingerprint = getattr(self, '_current_fingerprint', '') or fp_module.generate_fingerprint()
+        user_email = self.session.get('user_email', '')
+
+        if not lm.check_internet_connectivity():
+            messagebox.showerror("Network Offline", "An active internet connection is required to request edit access from the owner.")
+            return
+
+        if hasattr(self, 'btn_request_edit') and self.btn_request_edit.winfo_exists():
+            self.btn_request_edit.configure(text="Requesting...", state="disabled")
+
+        def run_req():
+            try:
+                success, msg = lm.request_edit_access(api_url, drive_id, fingerprint, user_email)
+                if success:
+                    def _on_success():
+                        if hasattr(self, 'btn_request_edit') and self.btn_request_edit.winfo_exists():
+                            self.btn_request_edit.configure(text="Edit Requested (Pending)", state="disabled")
+                        if hasattr(self, 'ws_status_footer') and self.ws_status_footer.winfo_exists():
+                            self.ws_status_footer.configure(text="Edit access requested. Waiting for owner approval...")
+                        messagebox.showinfo("Request Sent", "Your request for edit access has been sent to the vault owner.\n\nYou will be notified when approved.")
+                    self.after(0, _on_success)
+                else:
+                    def _on_fail():
+                        if hasattr(self, 'btn_request_edit') and self.btn_request_edit.winfo_exists():
+                            self.btn_request_edit.configure(text="Request Edit Access", state="normal")
+                        messagebox.showerror("Request Failed", f"Could not request edit access: {msg}")
+                    self.after(0, _on_fail)
+            except Exception as e:
+                logger.exception("Edit request failure")
+                def _on_err():
+                    if hasattr(self, 'btn_request_edit') and self.btn_request_edit.winfo_exists():
+                        self.btn_request_edit.configure(text="Request Edit Access", state="normal")
+                    messagebox.showerror("Error", f"Error requesting edit access: {e}")
+                self.after(0, _on_err)
+
+        threading.Thread(target=run_req, daemon=True).start()
+
+    def _apply_access_level_change(self, new_level: str, is_revoked: bool = False):
+        """Handle real-time elevation or revocation received via SSE."""
+        target_level = 'READ_WRITE' if str(new_level).upper() == 'READ_WRITE' else 'READ_ONLY'
+        current_level = self.session.get('access_level', 'READ_ONLY')
+
+        logger.info(f"Applying real-time access level change: {current_level} -> {target_level} (revoked={is_revoked})")
+        self.session['access_level'] = target_level
+
+        # Persist to local lease token
+        try:
+            cfg = load_config()
+            drive_id = cfg.get('drive_id', '') if cfg else ''
+            k_local = self.session.get('k_local')
+            if k_local and drive_id:
+                lm.update_lease_access_level(LEASE_FILE, k_local, drive_id, target_level, vault_path=VAULT_FILE)
+        except Exception as e:
+            logger.warning(f"Could not update local lease access level: {e}")
+
+        # Update UI components
+        if target_level == 'READ_WRITE':
+            if hasattr(self, 'btn_request_edit') and self.btn_request_edit.winfo_exists():
+                self.btn_request_edit.pack_forget()
+            if hasattr(self, 'btn_save_lock') and self.btn_save_lock.winfo_exists():
+                self.btn_save_lock.pack(side="right", padx=(10, 0))
+            if hasattr(self, 'lbl_read_only') and self.lbl_read_only.winfo_exists():
+                self.lbl_read_only.pack_forget()
+            if hasattr(self, 'btn_exit') and self.btn_exit.winfo_exists():
+                self.btn_exit.configure(text="Discard & Exit")
+            if hasattr(self, 'ws_status_footer') and self.ws_status_footer.winfo_exists():
+                self.ws_status_footer.configure(text="Full Read & Write access granted by drive owner — changes will be saved upon lock")
+            messagebox.showinfo("Access Elevated", "The drive owner has granted you Read & Write access!\n\nYou can now save changes to the vault.")
+        else:
+            # DEMOTED / REVOKED TO READ-ONLY
+            if hasattr(self, 'btn_save_lock') and self.btn_save_lock.winfo_exists():
+                self.btn_save_lock.pack_forget()
+            if hasattr(self, 'btn_request_edit') and self.btn_request_edit.winfo_exists():
+                self.btn_request_edit.configure(text="Request Edit Access", state="normal")
+                self.btn_request_edit.pack(side="right", padx=(10, 0))
+            if hasattr(self, 'lbl_read_only') and self.lbl_read_only.winfo_exists():
+                self.lbl_read_only.pack(side="right", padx=(0, 10))
+            if hasattr(self, 'btn_exit') and self.btn_exit.winfo_exists():
+                self.btn_exit.configure(text="Exit Vault")
+            if hasattr(self, 'ws_status_footer') and self.ws_status_footer.winfo_exists():
+                self.ws_status_footer.configure(text="Session restricted to Read-Only by owner. Saving is disabled.")
+            
+            messagebox.showwarning(
+                "Write Access Revoked",
+                "Your write access has been revoked by the drive owner.\n\n"
+                "This session has been switched to Read-Only mode. "
+                "No further writes can be made or saved to the vault."
+            )
+
+    def _on_edit_access_denied(self):
+        """Owner denied edit access request."""
+        if hasattr(self, 'btn_request_edit') and self.btn_request_edit.winfo_exists():
+            self.btn_request_edit.configure(text="Request Edit Access", state="normal")
+        if hasattr(self, 'ws_status_footer') and self.ws_status_footer.winfo_exists():
+            self.ws_status_footer.configure(text="Edit access request was denied by the drive owner.")
+        messagebox.showinfo("Request Denied", "The drive owner declined your request for edit access.")
 
     def _start_sse_listener(self):
         """Start real-time Server-Sent Events listener thread for remote killswitch."""
@@ -1818,6 +2001,20 @@ class USBKillswitchApp(ctk.CTk):
                                         logger.warning(f"🚨 REAL-TIME REMOTE KILLSWITCH RECEIVED: {reason}")
                                         self.after(0, lambda r_msg=reason: self._emergency_killswitch_abort(r_msg))
                                         return
+                                    elif ev_type == 'ACCESS_LEVEL_CHANGED':
+                                        ev_email = (payload.get('user_email') or '').strip().lower()
+                                        curr_email = (self.session.get('user_email') or '').strip().lower()
+                                        if not ev_email or ev_email == curr_email:
+                                            new_lvl = payload.get('access_level', 'READ_ONLY')
+                                            is_rev = payload.get('revoked', False)
+                                            logger.info(f"SSE event ACCESS_LEVEL_CHANGED: {new_lvl} (revoked={is_rev})")
+                                            self.after(0, lambda lvl=new_lvl, rev=is_rev: self._apply_access_level_change(lvl, rev))
+                                    elif ev_type == 'EDIT_ACCESS_DENIED':
+                                        ev_email = (payload.get('user_email') or '').strip().lower()
+                                        curr_email = (self.session.get('user_email') or '').strip().lower()
+                                        if not ev_email or ev_email == curr_email:
+                                            logger.info("SSE event EDIT_ACCESS_DENIED received")
+                                            self.after(0, self._on_edit_access_denied)
                                     elif ev_type == 'CONNECTED':
                                         logger.debug(f"SSE stream handshake confirmed for drive {drive_id}")
                                 except Exception as pe:

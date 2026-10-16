@@ -1024,32 +1024,72 @@
       badge.style.display = 'inline-block';
       badge.textContent = pending.length;
 
-      container.innerHTML = pending.map(p => `
-        <div class="panel pending-panel" id="req-${p.request_id}">
-          <div class="panel-header">
-            <div class="panel-title-wrap">
-              <span class="panel-title">Host Authorization Request</span>
-              <span class="status-chip warn">Pending</span>
+      container.innerHTML = pending.map(p => {
+        const isEditReq = (p.request_type === 'EDIT_ACCESS');
+        if (isEditReq) {
+          return `
+            <div class="panel pending-panel" id="req-${p.request_id}" style="border-left: 3px solid #3b82f6;">
+              <div class="panel-header">
+                <div class="panel-title-wrap">
+                  <span class="panel-title">Edit Access Elevation Request</span>
+                  <span class="status-chip in-use">Edit Access</span>
+                </div>
+                <span class="code-tag">${p.request_id}</span>
+              </div>
+
+              <div class="spec-grid">
+                <div class="spec-item"><span class="spec-k">Vault:</span> <span class="spec-v">${p.drive_label || p.drive_id.slice(0, 8) + '…'}</span></div>
+                <div class="spec-item"><span class="spec-k">Requester:</span> <strong style="color:var(--text-main); font-size:13px">${p.requester_email || 'Unspecified'}</strong></div>
+                <div class="spec-item"><span class="spec-k">Fingerprint:</span> <span class="code-tag">${truncFp(p.hardware_fingerprint)}</span></div>
+                <div class="spec-item"><span class="spec-k">Queued:</span> <span class="spec-v">${timeAgo(p.created_at)}</span></div>
+              </div>
+
+              <div style="margin: 8px 0 10px 0; font-size:12px; color:var(--text-muted);">
+                User is connected in <strong>Read-Only</strong> mode and requests elevation to <strong>Read &amp; Write</strong> access.
+              </div>
+
+              <div class="btn-row">
+                <button class="cmd-btn primary" onclick="approveEditRequest('${p.request_id}')">Grant Edit Access (Read &amp; Write)</button>
+                <button class="cmd-btn danger" onclick="denyRequest('${p.request_id}')">Deny</button>
+              </div>
             </div>
-            <span class="code-tag">${p.request_id}</span>
-          </div>
+          `;
+        }
 
-          <div class="spec-grid">
-            <div class="spec-item"><span class="spec-k">Vault:</span> <span class="spec-v">${p.drive_label || p.drive_id.slice(0, 8) + '…'}</span></div>
-            <div class="spec-item"><span class="spec-k">Requester:</span> <span class="spec-v">${p.requester_email || 'Unspecified'}</span></div>
-            <div class="spec-item"><span class="spec-k">Fingerprint:</span> <span class="code-tag">${truncFp(p.hardware_fingerprint)}</span></div>
-            <div class="spec-item"><span class="spec-k">Queued:</span> <span class="spec-v">${timeAgo(p.created_at)}</span></div>
-          </div>
+        return `
+          <div class="panel pending-panel" id="req-${p.request_id}">
+            <div class="panel-header">
+              <div class="panel-title-wrap">
+                <span class="panel-title">Host Authorization Request</span>
+                <span class="status-chip warn">Pending</span>
+              </div>
+              <span class="code-tag">${p.request_id}</span>
+            </div>
 
-          <div class="btn-row">
-            <button class="cmd-btn" onclick="approveRequest('${p.request_id}', 'ONE_TIME')">Authorize 12h</button>
-            <button class="cmd-btn" onclick="approveRequest('${p.request_id}', 'CUSTOM_LEASE', 24)">Lease 24h</button>
-            <button class="cmd-btn" onclick="approveRequest('${p.request_id}', 'CUSTOM_LEASE', 168)">Lease 7d</button>
-            <button class="cmd-btn primary" onclick="approveRequest('${p.request_id}', 'FOREVER')">Trust Host Permanently</button>
-            <button class="cmd-btn danger" onclick="denyRequest('${p.request_id}')">Deny</button>
+            <div class="spec-grid">
+              <div class="spec-item"><span class="spec-k">Vault:</span> <span class="spec-v">${p.drive_label || p.drive_id.slice(0, 8) + '…'}</span></div>
+              <div class="spec-item"><span class="spec-k">Requester:</span> <span class="spec-v">${p.requester_email || 'Unspecified'}</span></div>
+              <div class="spec-item"><span class="spec-k">Fingerprint:</span> <span class="code-tag">${truncFp(p.hardware_fingerprint)}</span></div>
+              <div class="spec-item"><span class="spec-k">Queued:</span> <span class="spec-v">${timeAgo(p.created_at)}</span></div>
+            </div>
+
+            <div style="margin: 8px 0 8px 0; padding: 6px 10px; background: rgba(0,0,0,0.03); border-radius: 4px; display: inline-flex; align-items: center; gap: 8px;">
+              <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; font-weight: 500; color: var(--text-main);">
+                <input type="checkbox" id="rw-${p.request_id}" style="accent-color: var(--accent); cursor: pointer;">
+                <span>Grant Read &amp; Write Access <span style="font-size: 11px; color: var(--text-dim);">(Default: Read-Only)</span></span>
+              </label>
+            </div>
+
+            <div class="btn-row">
+              <button class="cmd-btn" onclick="approveRequest('${p.request_id}', 'ONE_TIME')">Authorize 12h</button>
+              <button class="cmd-btn" onclick="approveRequest('${p.request_id}', 'CUSTOM_LEASE', 24)">Lease 24h</button>
+              <button class="cmd-btn" onclick="approveRequest('${p.request_id}', 'CUSTOM_LEASE', 168)">Lease 7d</button>
+              <button class="cmd-btn primary" onclick="approveRequest('${p.request_id}', 'FOREVER')">Trust Host Permanently</button>
+              <button class="cmd-btn danger" onclick="denyRequest('${p.request_id}')">Deny</button>
+            </div>
           </div>
-        </div>
-      `).join('');
+        `;
+      }).join('');
     }
 
     // ─── Render Registered Drives ───
@@ -1117,12 +1157,11 @@
           ${d.lost_reason ? `<div style="font-size:12px;color:var(--status-err);margin-bottom:8px">Reason: ${d.lost_reason}</div>` : ''}
 
           <div class="panel-drawer" id="details-${d.drive_id}">
-            <div class="drawer-title">Authorized Accounts</div>
-            <div class="chip-list" id="access-list-${d.drive_id}">Fetching access list...</div>
-            <div class="input-row">
-              <input type="email" class="line-input" id="add-email-${d.drive_id}" placeholder="user@company.com">
-              <button class="cmd-btn primary" onclick="addUser('${d.drive_id}')">Grant Access</button>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+              <div class="drawer-title" style="margin-bottom:0">Access Control &amp; Permissions</div>
+              <button class="cmd-btn primary" style="font-size:11px; padding:4px 10px;" onclick="openAddUserModal('${d.drive_id}', '${(d.label || 'Storage Vault').replace(/'/g, "\\'")}')">+ Add User</button>
             </div>
+            <div id="access-container-${d.drive_id}">Fetching access list...</div>
           </div>
         </div>
         `;
@@ -1132,6 +1171,7 @@
     // ─── Toggle Details ───
     async function toggleDriveDetails(driveId) {
       const el = document.getElementById(`details-${driveId}`);
+      if (!el) return;
       const isOpen = el.classList.contains('open');
       if (isOpen) {
         el.classList.remove('open');
@@ -1141,18 +1181,55 @@
 
       try {
         const { data } = await apiFetch(`/api/status/${driveId}`);
-        const accessListEl = document.getElementById(`access-list-${driveId}`);
-        if (data.access_list && data.access_list.length > 0) {
-          const isOwner = (email) => email.toLowerCase() === (data.owner_email || '').toLowerCase();
-          accessListEl.innerHTML = data.access_list.map(a =>
-            `<span class="chip">
-              <span>${a.email}</span>
-              ${isOwner(a.email) ? '<span style="font-size:10px;color:var(--text-dim)">[owner]</span>' : `<button onclick="removeUser('${driveId}', '${a.email}')" title="Revoke">×</button>`}
-            </span>`
-          ).join('');
-        } else {
-          accessListEl.innerHTML = '<span style="color:var(--text-dim);font-size:12px">No guest accounts authorized.</span>';
-        }
+        const containerEl = document.getElementById(`access-container-${driveId}`);
+        if (!containerEl) return;
+
+        const isOwner = (email) => email.toLowerCase().trim() === (data.owner_email || '').toLowerCase().trim();
+        const accessList = data.access_list || [];
+
+        const readWriteUsers = accessList.filter(a => isOwner(a.email) || a.access_level === 'READ_WRITE');
+        const readOnlyUsers = accessList.filter(a => !isOwner(a.email) && a.access_level !== 'READ_WRITE');
+
+        let html = `
+          <div style="margin-bottom: 14px;">
+            <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); margin-bottom: 6px;">
+              Read &amp; Write Access (${readWriteUsers.length})
+            </div>
+            <div class="chip-list">
+              ${readWriteUsers.length > 0 ? readWriteUsers.map(a => `
+                <span class="chip" style="background: rgba(16,185,129,0.08); border-color: rgba(16,185,129,0.25);">
+                  <span>${a.email}</span>
+                  ${isOwner(a.email)
+                    ? '<span style="font-size:10px; font-weight:600; color:var(--status-ok)">[Owner]</span>'
+                    : `
+                      <span style="font-size:9px; color:var(--text-dim)">[Read &amp; Write]</span>
+                      <button onclick="changeUserAccess('${driveId}', '${a.email}', 'READ_ONLY')" title="Switch to Read-Only" style="background:none;border:none;cursor:pointer;color:var(--text-dim);font-size:10px;padding:0 3px;">⇄ Read-Only</button>
+                      <button onclick="removeUser('${driveId}', '${a.email}')" title="Revoke">×</button>
+                    `
+                  }
+                </span>
+              `).join('') : '<span style="color:var(--text-dim);font-size:12px">No Read &amp; Write accounts.</span>'}
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); margin-bottom: 6px;">
+              Read-Only Access (${readOnlyUsers.length})
+            </div>
+            <div class="chip-list">
+              ${readOnlyUsers.length > 0 ? readOnlyUsers.map(a => `
+                <span class="chip" style="background: rgba(100,116,139,0.08); border-color: rgba(100,116,139,0.25);">
+                  <span>${a.email}</span>
+                  <span style="font-size:9px; color:var(--text-dim)">[Read-Only]</span>
+                  <button onclick="changeUserAccess('${driveId}', '${a.email}', 'READ_WRITE')" title="Promote to Read &amp; Write" style="background:none;border:none;cursor:pointer;color:var(--accent);font-size:10px;padding:0 3px;">⇄ Read &amp; Write</button>
+                  <button onclick="removeUser('${driveId}', '${a.email}')" title="Revoke">×</button>
+                </span>
+              `).join('') : '<span style="color:var(--text-dim);font-size:12px">No Read-Only accounts.</span>'}
+            </div>
+          </div>
+        `;
+
+        containerEl.innerHTML = html;
       } catch (e) {
         console.error(e);
       }
@@ -1161,13 +1238,37 @@
     // ─── Actions ───
     async function approveRequest(requestId, scope, leaseHours) {
       try {
-        const body = { request_id: requestId, scope };
+        const isRw = document.getElementById(`rw-${requestId}`)?.checked;
+        const body = {
+          request_id: requestId,
+          scope,
+          access_level: isRw ? 'READ_WRITE' : 'READ_ONLY'
+        };
         if (leaseHours) body.lease_hours = leaseHours;
         const { status, data } = await apiFetch('/api/approve-request', {
           method: 'POST', body: JSON.stringify(body)
         });
         if (status === 200) {
-          showToast(`Request ${requestId} approved (${scope})`, 'success');
+          showToast(`Request ${requestId} approved (${scope}) [${body.access_level}]`, 'success');
+          refreshAll();
+        } else {
+          showToast(data.error || 'Approval failed', 'error');
+        }
+      } catch (e) { showToast('Network error', 'error'); }
+    }
+
+    async function approveEditRequest(requestId) {
+      try {
+        const body = {
+          request_id: requestId,
+          scope: 'FOREVER',
+          access_level: 'READ_WRITE'
+        };
+        const { status, data } = await apiFetch('/api/approve-request', {
+          method: 'POST', body: JSON.stringify(body)
+        });
+        if (status === 200) {
+          showToast(`Edit access approved in real-time.`, 'success');
           refreshAll();
         } else {
           showToast(data.error || 'Approval failed', 'error');
@@ -1189,60 +1290,66 @@
       } catch (e) { showToast('Network error', 'error'); }
     }
 
-    async function markLost(driveId) {
-      if (!confirm('Engage killswitch? Storage access will be immediately blocked for all users (including owner) until reactivated.')) return;
-
-      const removeUsers = confirm('Do you also want to remove all authorized users from the access list?\n\n• Click OK to REMOVE everyone from access list (they must request access again after reactivation).\n• Click Cancel to KEEP them in access list (they will regain access once you reactivate).');
-
+    async function changeUserAccess(driveId, email, newAccessLevel) {
       try {
-        const { status, data } = await apiFetch('/api/mark-lost', {
-          method: 'POST', body: JSON.stringify({ 
-            drive_id: driveId, 
-            reason: 'Remote killswitch invoked from admin console',
-            remove_access_list: removeUsers
-          })
+        const { status, data } = await apiFetch('/api/sharing/update-user-access', {
+          method: 'POST', body: JSON.stringify({ drive_id: driveId, email, access_level: newAccessLevel })
         });
         if (status === 200) {
-          const killedMsg = (data.sessions_terminated && data.sessions_terminated > 0)
-            ? ` Terminated ${data.sessions_terminated} active session(s) in real time.`
-            : '';
-          showToast((removeUsers ? 'Drive disabled & access list cleared.' : 'Drive disabled. Killswitch active.') + killedMsg, 'error');
-          refreshAll();
+          showToast(`Updated ${email} permissions to ${newAccessLevel}`, 'success');
+          const el = document.getElementById(`details-${driveId}`);
+          if (el) {
+            el.classList.remove('open');
+            toggleDriveDetails(driveId);
+          }
         } else {
-          showToast(data.error || 'Command failed', 'error');
+          showToast(data.error || 'Update failed', 'error');
         }
       } catch (e) { showToast('Network error', 'error'); }
     }
 
-    async function reactivate(driveId) {
-      try {
-        const { status, data } = await apiFetch('/api/reactivate', {
-          method: 'POST', body: JSON.stringify({ drive_id: driveId })
-        });
-        if (status === 200) {
-          showToast('Drive reactivated.', 'success');
-          refreshAll();
-        } else {
-          showToast(data.error || 'Command failed', 'error');
-        }
-      } catch (e) { showToast('Network error', 'error'); }
+    let currentModalDriveId = null;
+
+    function openAddUserModal(driveId, driveLabel) {
+      currentModalDriveId = driveId;
+      document.getElementById('modalDriveName').textContent = driveLabel || 'Storage Vault';
+      document.getElementById('modalUserEmail').value = '';
+      document.getElementById('modalReadWrite').checked = false;
+      document.getElementById('addUserModal').style.display = 'flex';
+      document.getElementById('modalUserEmail').focus();
     }
 
-    async function addUser(driveId) {
-      const input = document.getElementById(`add-email-${driveId}`);
-      const email = input.value.trim();
-      if (!email) return;
+    function closeAddUserModal() {
+      document.getElementById('addUserModal').style.display = 'none';
+      currentModalDriveId = null;
+    }
+
+    async function submitAddUserModal() {
+      if (!currentModalDriveId) return;
+      const email = document.getElementById('modalUserEmail').value.trim();
+      if (!email) {
+        showToast('Please enter an email address.', 'error');
+        return;
+      }
+      const isRw = document.getElementById('modalReadWrite').checked;
+      const access_level = isRw ? 'READ_WRITE' : 'READ_ONLY';
+
       try {
         const { status, data } = await apiFetch('/api/sharing/add-user', {
-          method: 'POST', body: JSON.stringify({ drive_id: driveId, email })
+          method: 'POST',
+          body: JSON.stringify({ drive_id: currentModalDriveId, email, access_level })
         });
         if (status === 201) {
-          showToast(`Access granted to ${email}`, 'success');
-          input.value = '';
-          toggleDriveDetails(driveId);
-          setTimeout(() => toggleDriveDetails(driveId), 100);
+          showToast(`Access granted to ${email} (${access_level})`, 'success');
+          const dId = currentModalDriveId;
+          closeAddUserModal();
+          const el = document.getElementById(`details-${dId}`);
+          if (el) {
+            el.classList.remove('open');
+            toggleDriveDetails(dId);
+          }
         } else {
-          showToast(data.error || 'Command failed', 'error');
+          showToast(data.error || 'Failed to add user', 'error');
         }
       } catch (e) { showToast('Network error', 'error'); }
     }
@@ -1417,5 +1524,30 @@
       }, 30000);
     });
   </script>
+
+  <!-- Add User Modal Dialog -->
+  <div id="addUserModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:9999; align-items:center; justify-content:center; backdrop-filter:blur(3px);">
+    <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:24px; width:90%; max-width:420px; box-shadow:0 12px 30px rgba(0,0,0,0.3);">
+      <div style="font-size:16px; font-weight:700; color:var(--text-main); margin-bottom:4px;">Add Authorized User</div>
+      <div id="modalDriveName" style="font-size:12px; color:var(--text-dim); margin-bottom:16px;">Storage Vault</div>
+
+      <div style="margin-bottom:14px;">
+        <label style="display:block; font-size:12px; font-weight:600; color:var(--text-main); margin-bottom:6px;">Google Email ID</label>
+        <input type="email" id="modalUserEmail" class="line-input" placeholder="colleague@gmail.com" style="width:100%; box-sizing:border-box;">
+      </div>
+
+      <div style="margin-bottom:20px; padding:12px 14px; background:rgba(0,0,0,0.03); border:1px solid var(--border-subtle); border-radius:6px;">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; font-weight:500; color:var(--text-main);">
+          <input type="checkbox" id="modalReadWrite" style="accent-color:var(--accent); cursor:pointer; width:16px; height:16px;">
+          <span>Grant Read &amp; Write Access <span style="font-size:11px; color:var(--text-dim);">(Default: Read-Only)</span></span>
+        </label>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button class="cmd-btn" onclick="closeAddUserModal()">Cancel</button>
+        <button class="cmd-btn primary" onclick="submitAddUserModal()">Grant Access</button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
