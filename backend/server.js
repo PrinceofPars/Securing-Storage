@@ -1347,6 +1347,15 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
         const deviceEmail = (trustedDevice.user_email || email || drive.owner_email).toLowerCase().trim();
         const isOwnerDevice = (deviceEmail === drive.owner_email.toLowerCase().trim());
         const accessRow = isOwnerDevice ? null : db.prepare('SELECT access_level FROM access_list WHERE drive_id = ? AND allowed_email = ?').get(drive_id, deviceEmail);
+        if (!isOwnerDevice && !accessRow) {
+          db.prepare('DELETE FROM trusted_devices WHERE id = ?').run(trustedDevice.id);
+          console.warn(`🚨 Revoked user attempted access via trusted device: ${deviceEmail}`);
+          logAuthEvent(drive_id, fingerprint_hash, deviceEmail, 'REVOKED_USER', req);
+          return res.status(403).json({
+            status:  'DENIED',
+            message: 'User access has been revoked by drive owner.'
+          });
+        }
         const deviceAccessLevel = isOwnerDevice ? 'READ_WRITE' : (accessRow?.access_level || 'READ_ONLY');
 
         let leaseSeconds = trustedDevice.trust_scope === 'FOREVER'

@@ -359,12 +359,12 @@ def online_auth(
 
             scope = data.get('trust_scope', 'LEASE')
             logger.info(f"Online auth GRANTED for drive {drive_id} ({scope}, {access_level})")
-            return 'GRANTED', cloud_key_share, f"Access granted ({scope}).", None, access_level
+            return 'GRANTED', cloud_key_share, f"Access granted ({scope}).", None, access_level, resolved_email
 
         elif response.status_code == 202 and data.get('status') == 'PENDING_APPROVAL':
             request_id = data.get('request_id', '')
             logger.info(f"Online auth PENDING for drive {drive_id}, request: {request_id}")
-            return 'PENDING', None, data.get('message', 'Waiting for approval.'), request_id, 'READ_ONLY'
+            return 'PENDING', None, data.get('message', 'Waiting for approval.'), request_id, 'READ_ONLY', user_email
 
         elif response.status_code == 403:
             status  = data.get('status', 'DENIED')
@@ -372,23 +372,23 @@ def online_auth(
             logger.warning(f"Online auth DENIED: {status} — {message}")
             if status == 'LOCKED':
                 clear_lease_token(lease_path=lease_path, vault_path=vault_path)
-                return 'LOCKED', None, message, None, 'READ_ONLY'
-            return 'DENIED', None, message, None, 'READ_ONLY'
+                return 'LOCKED', None, message, None, 'READ_ONLY', user_email
+            return 'DENIED', None, message, None, 'READ_ONLY', user_email
 
         elif response.status_code == 404:
             clear_lease_token(lease_path=lease_path, vault_path=vault_path)
-            return 'ERROR', None, 'Drive ID not registered on server.', None, 'READ_ONLY'
+            return 'ERROR', None, 'Drive ID not registered on server.', None, 'READ_ONLY', user_email
 
         else:
             err_msg = data.get('error') or data.get('message') or f"Server returned {response.status_code}"
-            return 'ERROR', None, err_msg, None, 'READ_ONLY'
+            return 'ERROR', None, err_msg, None, 'READ_ONLY', user_email
 
     except requests.exceptions.ConnectionError:
-        return 'ERROR', None, f"Cannot connect to server at {api_base_url}", None, 'READ_ONLY'
+        return 'ERROR', None, f"Cannot connect to server at {api_base_url}", None, 'READ_ONLY', user_email
     except requests.exceptions.Timeout:
-        return 'ERROR', None, "Server request timed out.", None, 'READ_ONLY'
+        return 'ERROR', None, "Server request timed out.", None, 'READ_ONLY', user_email
     except Exception as e:
-        return 'ERROR', None, f"Authentication error: {e}", None, 'READ_ONLY'
+        return 'ERROR', None, f"Authentication error: {e}", None, 'READ_ONLY', user_email
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -602,7 +602,7 @@ def authenticate(
 
     if is_online:
         logger.info("Network detected — attempting online authentication...")
-        result, cks, message, request_id, access_level = online_auth(
+        result, cks, message, request_id, access_level, _resolved_email = online_auth(
             api_base_url, drive_id, fingerprint_hash, user_email,
             k_local, lease_path=lease_path, vault_path=vault_path,
             auth_token=auth_token

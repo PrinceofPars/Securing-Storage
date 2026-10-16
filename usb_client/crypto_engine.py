@@ -982,6 +982,13 @@ def migrate_v2_to_v3(
     manifest = read_vault_manifest(vault_path, k_local, k_cloud)
     drive_metadata = manifest.get('drive_metadata', {})
 
+    existing_lease = None
+    try:
+        existing_hdr = read_vault_header(vault_path)
+        existing_lease = existing_hdr.get('lease')
+    except Exception:
+        pass
+
     temp_dir = decrypt_files_to_working_dir(vault_path, k_local, k_cloud, manifest)
 
     stats = encrypt_folder_to_vault(
@@ -990,8 +997,9 @@ def migrate_v2_to_v3(
         drive_metadata=drive_metadata
     )
 
-    if lease_data:
-        update_vault_header(vault_path, lease_data=lease_data)
+    lease_to_preserve = lease_data or existing_lease
+    if lease_to_preserve:
+        update_vault_header(vault_path, lease_data=lease_to_preserve)
 
     secure_wipe_temp(temp_dir)
     logger.info(f"✅ Migrated v2 vault to v3 encapsulated vault: {vault_path}")

@@ -339,7 +339,7 @@ class USBKillswitchApp(ctk.CTk):
                     return True
 
             # Step 2: Check local offline lease (allowed both offline and when online & not revoked)
-            lease = lm.load_lease_token(LEASE_FILE, k_local, drive_id, vault_path=VAULT_FILE)
+            lease = lm.load_lease_token(LEASE_FILE, k_local, drive_id, vault_path=VAULT_FILE, fingerprint_hash=fp_hash)
             if lease:
                 now = int(time.time())
                 expires_at = lease.get('expires_at', 0)
@@ -360,14 +360,16 @@ class USBKillswitchApp(ctk.CTk):
             # Step 3: Check if online and this hardware fingerprint is already trusted on server
             if lm.check_internet_connectivity():
                 try:
-                    res, cks, msg, req_id, access_level = lm.online_auth(
+                    res, cks, msg, req_id, access_level, verified_email = lm.online_auth(
                         api_url, drive_id, fp_hash, '', k_local,
                         lease_path=LEASE_FILE, vault_path=VAULT_FILE
                     )
                     if res == 'GRANTED' and cks:
                         logger.info("Hardware fingerprint verified via online trusted device. Directly opening workspace.")
-                        lease_now = lm.load_lease_token(LEASE_FILE, k_local, drive_id, vault_path=VAULT_FILE)
-                        user_email = (lease_now.get('user_email') if lease_now else '') or config.get('owner_email', '')
+                        user_email = verified_email or getattr(self, '_current_user_email', '') or ''
+                        if not user_email:
+                            lease_now = lm.load_lease_token(LEASE_FILE, k_local, drive_id, vault_path=VAULT_FILE, fingerprint_hash=fp_hash)
+                            user_email = (lease_now.get('user_email') if lease_now else '') or ''
                         self._current_user_email = user_email
                         self._show_splash_screen("Hardware identity verified...")
                         self.after(50, lambda: self._load_vault_workspace(
@@ -1013,7 +1015,11 @@ class USBKillswitchApp(ctk.CTk):
                 if (vmeta and not vmeta.get('encapsulated')) or (CONFIG_FILE.exists() or LOCAL_KEY_FILE.exists()):
                     try:
                         cfg = load_config() or {'drive_id': manifest.get('drive_metadata', {}).get('drive_id', '')}
-                        lease_info = lm.load_lease_token(LEASE_FILE, k_local, cfg.get('drive_id', ''))
+                        lease_info = lm.load_lease_token(
+                            LEASE_FILE, k_local, cfg.get('drive_id', ''),
+                            vault_path=VAULT_FILE,
+                            fingerprint_hash=getattr(self, '_current_fingerprint', None)
+                        )
                         ce.migrate_v2_to_v3(VAULT_FILE, k_local, k_cloud, cfg, lease_data=lease_info)
                         for f in (CONFIG_FILE, LOCAL_KEY_FILE, LEASE_FILE):
                             if f.exists():
@@ -1032,10 +1038,14 @@ class USBKillswitchApp(ctk.CTk):
                 cfg = load_config()
                 if not resolved_email:
                     if cfg:
-                        lease_info = lm.load_lease_token(LEASE_FILE, k_local, cfg.get('drive_id', ''), vault_path=VAULT_FILE)
+                        lease_info = lm.load_lease_token(
+                            LEASE_FILE, k_local, cfg.get('drive_id', ''),
+                            vault_path=VAULT_FILE,
+                            fingerprint_hash=getattr(self, '_current_fingerprint', None)
+                        )
                         if lease_info and lease_info.get('user_email'):
                             resolved_email = lease_info.get('user_email').strip()
-                        elif cfg.get('owner_email'):
+                        elif cfg.get('owner_email') and access_level != 'READ_ONLY':
                             resolved_email = cfg.get('owner_email').strip()
 
                 owner_email = (
