@@ -349,17 +349,18 @@ class USBKillswitchApp(ctk.CTk):
                 if cks and now < expires_at and fp_hash.lower() == lease_fp.lower():
                     logger.info("Valid offline lease active for this host. Directly opening workspace.")
                     self._current_user_email = lease.get('user_email', '')
+                    lease_level = lease.get('access_level', 'READ_ONLY')
                     self._show_splash_screen("Authorizing hardware identity...")
                     self.after(50, lambda: self._load_vault_workspace(
                         k_local, cks, "Offline Lease", "Authorized offline session active",
-                        user_email=self._current_user_email
+                        user_email=self._current_user_email, access_level=lease_level
                     ))
                     return True
 
             # Step 3: Check if online and this hardware fingerprint is already trusted on server
             if lm.check_internet_connectivity():
                 try:
-                    res, cks, msg, req_id = lm.online_auth(
+                    res, cks, msg, req_id, access_level = lm.online_auth(
                         api_url, drive_id, fp_hash, '', k_local,
                         lease_path=LEASE_FILE, vault_path=VAULT_FILE
                     )
@@ -371,7 +372,7 @@ class USBKillswitchApp(ctk.CTk):
                         self._show_splash_screen("Hardware identity verified...")
                         self.after(50, lambda: self._load_vault_workspace(
                             k_local, cks, "Online Verified", "Hardware identity verified",
-                            user_email=user_email
+                            user_email=user_email, access_level=access_level
                         ))
                         return True
                 except Exception as oe:

@@ -224,7 +224,8 @@ def load_lease_token(
         if not target_fp:
             try:
                 import fingerprint as _fp
-                target_fp = _fp.get_fingerprint()
+                fn = getattr(_fp, 'generate_fingerprint', None) or getattr(_fp, 'get_fingerprint', None)
+                target_fp = fn() if fn else None
             except Exception:
                 target_fp = None
 
@@ -263,7 +264,7 @@ def get_lease_access_level(
     lease_path: Optional[Path],
     k_local: bytes,
     drive_id: str,
-    fingerprint_hash: str,
+    fingerprint_hash: Optional[str] = None,
     vault_path: Optional[Path] = None
 ) -> str:
     """Retrieve the access level ('READ_WRITE' or 'READ_ONLY') stored in the lease token."""
@@ -652,20 +653,33 @@ def update_lease_access_level(
     lease_path: Optional[Path],
     k_local: bytes,
     drive_id: str,
-    fingerprint_hash: str,
+    new_access_level: str = 'READ_ONLY',
     vault_path: Optional[Path] = None,
-    new_access_level: str = 'READ_ONLY'
+    fingerprint_hash: Optional[str] = None
 ) -> bool:
     """Update only the access_level stored in the local lease token."""
     try:
-        lease = load_lease_token(lease_path, k_local, drive_id, vault_path=vault_path, fingerprint_hash=fingerprint_hash)
+        # Resolve host fingerprint if omitted
+        target_fp = fingerprint_hash
+        if not target_fp:
+            try:
+                import fingerprint as _fp
+                fn = getattr(_fp, 'generate_fingerprint', None) or getattr(_fp, 'get_fingerprint', None)
+                target_fp = fn() if fn else None
+            except Exception:
+                target_fp = None
+
+        lease = load_lease_token(lease_path, k_local, drive_id, vault_path=vault_path, fingerprint_hash=target_fp)
         if not lease:
             return False
+
+        fp_to_save = lease.get('fingerprint') or target_fp or ''
+
         save_lease_token(
             lease_path       = lease_path,
             k_local          = k_local,
             drive_id         = drive_id,
-            fingerprint_hash = fingerprint_hash,
+            fingerprint_hash = fp_to_save,
             cloud_key_share  = lease.get('cloud_key_share', ''),
             jwt_token        = lease.get('jwt', ''),
             issued_at        = lease.get('issued_at', int(time.time())),
