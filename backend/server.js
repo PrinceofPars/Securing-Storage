@@ -2237,17 +2237,34 @@ app.post('/api/sharing/remove-user', requireAdminKey, (req, res) => {
       'DELETE FROM access_list WHERE drive_id = ? AND allowed_email = ?'
     ).run(drive_id, normalEmail);
 
-    // Broadcast access revocation to live session via SSE to immediately enforce read-only
-    broadcastDriveSessionEvent(drive_id, {
-      type: 'ACCESS_LEVEL_CHANGED',
-      drive_id,
-      user_email: normalEmail,
-      access_level: 'READ_ONLY',
-      revoked: true
-    }, normalEmail);
+    db.prepare(
+      'DELETE FROM trusted_devices WHERE drive_id = ? AND LOWER(TRIM(user_email)) = ?'
+    ).run(drive_id, normalEmail);
+
+    // Immediately terminate live connected session(s) for the revoked user via SSE
+    for (const [sid, session] of activeSessions.entries()) {
+      if (String(session.drive_id).toLowerCase().trim() === String(drive_id).toLowerCase().trim()) {
+        if (session.user_email && session.user_email.toLowerCase().trim() === normalEmail) {
+          console.log(`🚨 Terminating live session ${sid} for revoked user ${normalEmail}...`);
+          try {
+            session.res.write(`data: ${JSON.stringify({
+              type: 'KILL',
+              drive_id: drive_id,
+              user_email: normalEmail,
+              reason: `Your access to this storage vault has been revoked by the owner.`,
+              timestamp: Date.now()
+            })}\n\n`);
+            session.res.end();
+            activeSessions.delete(sid);
+          } catch (err) {
+            console.error(`Error terminating session ${sid}:`, err);
+          }
+        }
+      }
+    }
 
     return res.status(200).json({
-      message: `User ${normalEmail} removed from access list.`,
+      message: `User ${normalEmail} removed from access list and active sessions revoked.`,
       drive_id
     });
   } catch (err) {
