@@ -242,6 +242,7 @@ class USBKillswitchApp(ctk.CTk):
         self._timer_id    = None
         self._current_user_email  = ''
         self._current_fingerprint = fp_module.generate_fingerprint()
+        self._edit_requested      = False
 
         # Route initial view
         v_exists = VAULT_FILE.exists()
@@ -1387,13 +1388,22 @@ class USBKillswitchApp(ctk.CTk):
             command=self._do_lock_and_save
         )
 
-        self.btn_request_edit = ctk.CTkButton(
-            self.ws_actions_frame, text="Request Edit Access", height=32, width=145,
-            font=ctk.CTkFont(size=11, weight="bold"),
-            fg_color=COLORS['warning'], hover_color="#d97706",
-            text_color="#000000", corner_radius=4,
-            command=self._do_request_edit_access
-        )
+        if getattr(self, '_edit_requested', False):
+            self.btn_request_edit = ctk.CTkButton(
+                self.ws_actions_frame, text="Request Sent", height=32, width=145,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                fg_color=COLORS['bg_input'], hover_color=COLORS['bg_input'],
+                text_color=COLORS['text_dim'], border_width=1, border_color=COLORS['border'],
+                corner_radius=4, state="disabled"
+            )
+        else:
+            self.btn_request_edit = ctk.CTkButton(
+                self.ws_actions_frame, text="Request Edit Access", height=32, width=145,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                fg_color=COLORS['warning'], hover_color="#d97706",
+                text_color="#000000", corner_radius=4,
+                command=self._do_request_edit_access
+            )
 
         if access_level == 'READ_WRITE':
             self.btn_save_lock.pack(side="right", padx=(10, 0))
@@ -1859,8 +1869,17 @@ class USBKillswitchApp(ctk.CTk):
             messagebox.showerror("Network Offline", "An active internet connection is required to request edit access from the owner.")
             return
 
+        self._edit_requested = True
         if hasattr(self, 'btn_request_edit') and self.btn_request_edit.winfo_exists():
-            self.btn_request_edit.configure(text="Requesting...", state="disabled")
+            self.btn_request_edit.configure(
+                text="Request Sent",
+                state="disabled",
+                fg_color=COLORS['bg_input'],
+                hover_color=COLORS['bg_input'],
+                text_color=COLORS['text_dim'],
+                border_width=1,
+                border_color=COLORS['border']
+            )
 
         def run_req():
             try:
@@ -1868,22 +1887,46 @@ class USBKillswitchApp(ctk.CTk):
                 if success:
                     def _on_success():
                         if hasattr(self, 'btn_request_edit') and self.btn_request_edit.winfo_exists():
-                            self.btn_request_edit.configure(text="Edit Requested (Pending)", state="disabled")
+                            self.btn_request_edit.configure(
+                                text="Request Sent",
+                                state="disabled",
+                                fg_color=COLORS['bg_input'],
+                                hover_color=COLORS['bg_input'],
+                                text_color=COLORS['text_dim'],
+                                border_width=1,
+                                border_color=COLORS['border']
+                            )
                         if hasattr(self, 'ws_status_footer') and self.ws_status_footer.winfo_exists():
                             self.ws_status_footer.configure(text="Edit access requested. Waiting for owner approval...")
                         messagebox.showinfo("Request Sent", "Your request for edit access has been sent to the vault owner.\n\nYou will be notified when approved.")
                     self.after(0, _on_success)
                 else:
                     def _on_fail():
+                        self._edit_requested = False
                         if hasattr(self, 'btn_request_edit') and self.btn_request_edit.winfo_exists():
-                            self.btn_request_edit.configure(text="Request Edit Access", state="normal")
+                            self.btn_request_edit.configure(
+                                text="Request Edit Access",
+                                state="normal",
+                                fg_color=COLORS['warning'],
+                                hover_color="#d97706",
+                                text_color="#000000",
+                                border_width=0
+                            )
                         messagebox.showerror("Request Failed", f"Could not request edit access: {msg}")
                     self.after(0, _on_fail)
             except Exception as e:
                 logger.exception("Edit request failure")
                 def _on_err():
+                    self._edit_requested = False
                     if hasattr(self, 'btn_request_edit') and self.btn_request_edit.winfo_exists():
-                        self.btn_request_edit.configure(text="Request Edit Access", state="normal")
+                        self.btn_request_edit.configure(
+                            text="Request Edit Access",
+                            state="normal",
+                            fg_color=COLORS['warning'],
+                            hover_color="#d97706",
+                            text_color="#000000",
+                            border_width=0
+                        )
                     messagebox.showerror("Error", f"Error requesting edit access: {e}")
                 self.after(0, _on_err)
 
@@ -1891,6 +1934,7 @@ class USBKillswitchApp(ctk.CTk):
 
     def _apply_access_level_change(self, new_level: str, is_revoked: bool = False):
         """Handle real-time elevation or revocation received via SSE."""
+        self._edit_requested = False
         target_level = 'READ_WRITE' if str(new_level).upper() == 'READ_WRITE' else 'READ_ONLY'
         current_level = self.session.get('access_level', 'READ_ONLY')
 
@@ -2124,6 +2168,7 @@ class USBKillswitchApp(ctk.CTk):
                     pass
             threading.Thread(target=notify_end, daemon=True).start()
 
+        self._edit_requested = False
         self.session = {
             'unlocked': False, 'manifest': None, 'k_local': None,
             'cloud_key_share': None, 'working_dir': None, 'opened_files': {},
