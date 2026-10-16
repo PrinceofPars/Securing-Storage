@@ -547,7 +547,8 @@ class USBKillswitchApp(ctk.CTk):
                         data = r.json()
                         if data.get('authenticated') and data.get('email'):
                             verified_email = data['email']
-                            self.after(0, lambda e=verified_email: self._on_google_verified(e))
+                            token = data.get('token', '')
+                            self.after(0, lambda e=verified_email, t=token: self._on_google_verified(e, t))
                             return
                 except Exception:
                     pass
@@ -555,9 +556,10 @@ class USBKillswitchApp(ctk.CTk):
 
         threading.Thread(target=poll_google, daemon=True).start()
 
-    def _on_google_verified(self, email: str):
+    def _on_google_verified(self, email: str, token: str = ''):
         self._focus_window()
         self._init_owner_email = email
+        self._init_owner_token = token
         self.init_email_badge.configure(text=f"✓ Verified Owner: {email}", text_color=COLORS['success'])
         self.init_google_btn.configure(
             text=f"✓ Authenticated as {email}",
@@ -617,13 +619,20 @@ class USBKillswitchApp(ctk.CTk):
                 import requests
                 fp = fp_module.generate_fingerprint()
 
+                headers = {'Content-Type': 'application/json'}
+                owner_token = getattr(self, '_init_owner_token', None)
+                if owner_token:
+                    headers['Authorization'] = f"Bearer {owner_token}"
+
                 r = requests.post(
                     f"{api_url.rstrip('/')}/api/register",
                     json={
                         'label': label,
                         'owner_email': email,
-                        'hardware_fingerprint': fp
+                        'hardware_fingerprint': fp,
+                        'auth_token': owner_token
                     },
+                    headers=headers,
                     timeout=12
                 )
                 if r.status_code not in (200, 201):
@@ -902,7 +911,8 @@ class USBKillswitchApp(ctk.CTk):
                         data = r.json()
                         if data.get('authenticated') and data.get('email'):
                             verified_email = data['email']
-                            self.after(0, lambda e=verified_email: self._on_gate_google_verified(e))
+                            token = data.get('token', '')
+                            self.after(0, lambda e=verified_email, t=token: self._on_gate_google_verified(e, t))
                             return
                 except Exception:
                     pass
@@ -911,11 +921,12 @@ class USBKillswitchApp(ctk.CTk):
 
         threading.Thread(target=poll_google, daemon=True).start()
 
-    def _on_gate_google_verified(self, email: str):
+    def _on_gate_google_verified(self, email: str, token: str = ''):
         self._focus_window()
+        self._auth_token = token
         self.btn_gate_google.configure(text=f"  ✓ Verified: {email}", state="disabled")
         self.unlock_status.configure(text=f"Verified as {email}. Checking access permissions...", text_color=COLORS['info'])
-        self._do_unlock_with_email(email)
+        self._do_unlock_with_email(email, token=token)
 
     def _on_gate_google_timeout(self):
         if hasattr(self, 'btn_gate_google') and self.btn_gate_google.winfo_exists():
@@ -923,7 +934,7 @@ class USBKillswitchApp(ctk.CTk):
         if hasattr(self, 'unlock_status') and self.unlock_status.winfo_exists():
             self.unlock_status.configure(text="Authentication timed out. Click to try again.", text_color=COLORS['danger'])
 
-    def _do_unlock_with_email(self, email: str):
+    def _do_unlock_with_email(self, email: str, token: str = ''):
         config = load_config()
         if not config:
             self._on_unlock_failed("Vault configuration missing or corrupted.")
@@ -939,10 +950,12 @@ class USBKillswitchApp(ctk.CTk):
                 fp       = self._current_fingerprint
                 api_url  = get_api_url(config)
                 drive_id = config['drive_id']
+                auth_tok = token or getattr(self, '_auth_token', None)
 
                 result, cks, msg, was_online, request_id = lm.authenticate(
                     api_url, drive_id, fp, email, k_local,
-                    lease_path=LEASE_FILE, vault_path=VAULT_FILE
+                    lease_path=LEASE_FILE, vault_path=VAULT_FILE,
+                    auth_token=auth_tok
                 )
 
                 if result in ('GRANTED', 'OFFLINE_GRANTED'):

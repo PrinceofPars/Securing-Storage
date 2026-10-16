@@ -14,6 +14,7 @@ Dependencies: cryptography >= 41.0, requests >= 2.31, PyJWT >= 2.8
 """
 
 import base64
+import hashlib
 import json
 import logging
 import secrets
@@ -42,7 +43,7 @@ except ImportError:
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-LEASE_VERSION         = 2
+LEASE_VERSION         = 3
 CONNECTIVITY_TIMEOUT  = 3
 CONNECTIVITY_HOST     = '8.8.8.8'
 CONNECTIVITY_PORT     = 53
@@ -88,12 +89,19 @@ def check_internet_connectivity(
 # Lease Encryption Key Derivation
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _derive_lease_key(k_local: bytes, drive_id: str) -> bytes:
+def _derive_lease_key(k_local: bytes, drive_id: str, fingerprint_hash: Optional[str] = None) -> bytes:
+    if fingerprint_hash:
+        salt = hashlib.sha256(f"{drive_id}:{fingerprint_hash.strip().lower()}".encode('utf-8')).digest()
+        info = b'lease-token-key-v3'
+    else:
+        salt = drive_id.encode('utf-8')
+        info = b'lease-token-key-v2'
+
     hkdf = HKDF(
         algorithm=hashes.SHA256(),
         length=KEY_SIZE,
-        salt=drive_id.encode('utf-8'),
-        info=b'lease-token-key-v2',
+        salt=salt,
+        info=info,
         backend=default_backend()
     )
     return hkdf.derive(k_local)
@@ -127,7 +135,7 @@ def save_lease_token(
     }
     plaintext = json.dumps(inner_data, separators=(',', ':')).encode('utf-8')
 
-    lease_key = _derive_lease_key(k_local, drive_id)
+    lease_key = _derive_lease_key(k_local, drive_id, fingerprint_hash)
     aesgcm    = AESGCM(lease_key)
     nonce     = secrets.token_bytes(NONCE_SIZE)
 
@@ -171,7 +179,8 @@ def load_lease_token(
     lease_path: Optional[Path],
     k_local: bytes,
     drive_id: str,
-    vault_path: Optional[Path] = None
+    vault_path: Optional[Path] = None,
+    fingerprint_hash: Optional[str] = None
 ) -> Optional[dict]:
     """Load and decrypt the lease token from vault.enc header or lease.tok."""
     envelope = None
@@ -200,14 +209,34 @@ def load_lease_token(
 
     try:
         version = envelope.get('v', 0)
-        if version not in (1, 2):  # Accept v1 tokens for backwards compat
+        if version not in (1, 2, 3):  # Accept v1, v2, v3 tokens
             return None
 
         nonce      = base64.b64decode(envelope['nonce'])
         tag        = base64.b64decode(envelope['tag'])
         ciphertext = base64.b64decode(envelope['data'])
+        ct_with_tag = ciphertext + tag
 
-        # Try v2 key first, fall back to v1
+        # Resolve host fingerprint if omitted
+        target_fp = fingerprint_hash
+        if not target_fp:
+            try:
+                import fingerprint as _fp
+                target_fp = _fp.get_fingerprint()
+            except Exception:
+                target_fp = None
+
+        # 1. Try v3 key bound to host hardware fingerprint first
+        if target_fp:
+            try:
+                lease_key = _derive_lease_key(k_local, drive_id, target_fp)
+                aesgcm    = AESGCM(lease_key)
+                plaintext = aesgcm.decrypt(nonce, ct_with_tag, None)
+                return json.loads(plaintext.decode('utf-8'))
+            except Exception:
+                pass
+
+        # 2. Fall back to legacy v2 and v1 keys
         for info_tag in (b'lease-token-key-v2', b'lease-token-key-v1'):
             try:
                 hkdf = HKDF(
@@ -217,7 +246,6 @@ def load_lease_token(
                 )
                 lease_key = hkdf.derive(k_local)
                 aesgcm    = AESGCM(lease_key)
-                ct_with_tag = ciphertext + tag
                 plaintext = aesgcm.decrypt(nonce, ct_with_tag, None)
                 return json.loads(plaintext.decode('utf-8'))
             except Exception:
@@ -264,7 +292,8 @@ def online_auth(
     k_local: bytes,
     lease_path: Optional[Path] = None,
     vault_path: Optional[Path] = None,
-    timeout: int = 30
+    timeout: int = 30,
+    auth_token: Optional[str] = None
 ) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
     """
     Attempt online authentication against the backend API.
@@ -279,9 +308,13 @@ def online_auth(
         'hardware_fingerprint': fingerprint_hash,
         'user_email':           user_email
     }
+    headers = {'Content-Type': 'application/json'}
+    if auth_token:
+        payload['auth_token'] = auth_token
+        headers['Authorization'] = f'Bearer {auth_token}'
 
     try:
-        response = requests.post(url, json=payload, timeout=timeout)
+        response = requests.post(url, json=payload, headers=headers, timeout=timeout)
         data     = response.json()
 
         if response.status_code == 200 and data.get('status') == 'GRANTED':
@@ -458,9 +491,32 @@ def offline_lease_check(
     vault_path: Optional[Path] = None
 ) -> Tuple[bool, Optional[str], Optional[str]]:
     """Validate the local lease token for offline access."""
-    lease = load_lease_token(lease_path, k_local, drive_id, vault_path=vault_path)
+    # Check if a lease envelope actually exists before loading
+    has_envelope = False
+    if vault_path and vault_path.exists():
+        try:
+            _ce = ce
+            if _ce is None:
+                import crypto_engine as _ce
+            hdr = _ce.read_vault_header(vault_path)
+            if hdr and hdr.get('lease'):
+                has_envelope = True
+        except Exception:
+            pass
+    if not has_envelope and lease_path and lease_path.exists():
+        has_envelope = True
+
+    lease = load_lease_token(lease_path, k_local, drive_id, vault_path=vault_path, fingerprint_hash=current_fingerprint)
 
     if lease is None:
+        if has_envelope:
+            # Lease envelope exists but cannot be decrypted by current machine's fingerprint -> mismatch
+            clear_lease_token(lease_path=lease_path, vault_path=vault_path)
+            return False, None, (
+                "Hardware fingerprint mismatch. "
+                "This lease was bound to a different machine and has been deleted. "
+                "Please connect to the internet and authenticate online to register this device."
+            )
         return False, None, (
             "No valid offline lease found. "
             "Connect to internet and authenticate online to create a lease."
@@ -512,7 +568,8 @@ def authenticate(
     user_email: str,
     k_local: bytes,
     lease_path: Optional[Path] = None,
-    vault_path: Optional[Path] = None
+    vault_path: Optional[Path] = None,
+    auth_token: Optional[str] = None
 ) -> Tuple[str, Optional[str], str, bool, Optional[str]]:
     """
     High-level authentication dispatcher.
@@ -526,7 +583,8 @@ def authenticate(
         logger.info("Network detected — attempting online authentication...")
         result, cks, message, request_id = online_auth(
             api_base_url, drive_id, fingerprint_hash, user_email,
-            k_local, lease_path=lease_path, vault_path=vault_path
+            k_local, lease_path=lease_path, vault_path=vault_path,
+            auth_token=auth_token
         )
 
         if result == 'GRANTED':

@@ -227,7 +227,7 @@ def test_lease_encapsulation():
         print("✅ lease.tok was not created on disk (encapsulated into vault.enc header).")
 
         # Load lease from vault_path
-        lease = lm.load_lease_token(lease_file, k_local, drive_id, vault_path=vault_file)
+        lease = lm.load_lease_token(lease_file, k_local, drive_id, vault_path=vault_file, fingerprint_hash=fp)
         assert lease is not None
         assert lease['drive_id'] == drive_id
         assert lease['cloud_key_share'] == k_cloud.hex()
@@ -244,7 +244,7 @@ def test_lease_encapsulation():
         bad_fp = 'different_machine_fingerprint_0000000000000000'
         bad_ok, _, _ = lm.offline_lease_check(lease_file, k_local, drive_id, bad_fp, vault_path=vault_file)
         assert bad_ok is False
-        cleared_lease = lm.load_lease_token(lease_file, k_local, drive_id, vault_path=vault_file)
+        cleared_lease = lm.load_lease_token(lease_file, k_local, drive_id, vault_path=vault_file, fingerprint_hash=fp)
         assert cleared_lease is None, "Lease in header should have been cleared after fingerprint mismatch!"
         print("✅ Fingerprint mismatch successfully cleared the lease inside vault.enc header.")
 
@@ -314,7 +314,7 @@ def test_migration_v2_to_v3():
         assert meta_v2['encapsulated'] is False
 
         # Execute migration
-        lease_data = lm.load_lease_token(lease_file, k_local, drive_id)
+        lease_data = lm.load_lease_token(lease_file, k_local, drive_id, fingerprint_hash=fp)
         ce.migrate_v2_to_v3(vault_file, k_local, k_cloud, config, lease_data=lease_data)
 
         # Clean up loose files

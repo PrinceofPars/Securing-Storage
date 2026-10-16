@@ -171,11 +171,24 @@ console.log(`✅  Database initialised at: ${path.resolve(DB_PATH)}`);
 // ──────────────────────────────────────────────
 
 const app = express();
-app.set('trust proxy', true);
+app.set('trust proxy', 1);
 
 // In-memory registry for live active client sessions (Server-Sent Events)
 // Map: session_id -> { res, drive_id, session_id, user_email, hardware_fingerprint, hostname, os_user, ip, connected_at }
 const activeSessions = new Map();
+
+// In-memory desktop client Google login sessions
+const googleClientSessions = new Map();
+
+// Periodic cleanup of stale sessions older than 15 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [sid, data] of googleClientSessions.entries()) {
+    if (now - data.timestamp > 15 * 60 * 1000) {
+      googleClientSessions.delete(sid);
+    }
+  }
+}, 60 * 1000);
 
 // Configure helmet to allow inline styles and scripts for dashboard
 app.use(helmet({
@@ -195,16 +208,18 @@ const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10000,
   standardHeaders: true,
+  validate: { trustProxy: false },
   skip: (req) => {
-    const url = req.originalUrl || req.path || '';
-    // Never rate-limit real-time SSE streams, background dashboard sync, health checks, or OAuth polling
-    if (url.includes('/drive-events') ||
-        url.includes('/dashboard') ||
-        url.includes('/auth/google/check-session') ||
-        url.includes('/owner/me') ||
-        url.includes('/session/end') ||
-        url.includes('/status') ||
-        url.includes('/health')) {
+    // Strictly evaluate req.path to prevent query parameter bypasses (?bypass=/health)
+    const p = (req.path || '').toLowerCase();
+    if (p.startsWith('/drive-events') ||
+        p === '/dashboard/drives' ||
+        p === '/dashboard/pending' ||
+        p === '/auth/google/check-session' ||
+        p === '/owner/me' ||
+        p === '/session/end' ||
+        p.startsWith('/status/') ||
+        p === '/health') {
       return true;
     }
     return false;
@@ -219,6 +234,7 @@ const authLimiter = rateLimit({
   max: 50,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { trustProxy: false },
   message: { error: 'Too many authentication attempts.' }
 });
 
@@ -256,21 +272,62 @@ function getOwnerEmail(req) {
   }
 }
 
+function verifyRequestIdentity(req, targetEmail) {
+  if (!targetEmail) return false;
+  const normalizedTarget = targetEmail.toLowerCase().trim();
+
+  // 1. Check x-admin-key
+  const adminKey = req.headers['x-admin-key'];
+  if (adminKey && adminKey === ADMIN_KEY) {
+    return true;
+  }
+
+  // 2. Check signed owner token from cookie, header, or body
+  const ownerEmail = getOwnerEmail(req);
+  if (ownerEmail && ownerEmail.toLowerCase().trim() === normalizedTarget) {
+    return true;
+  }
+
+  const bodyToken = (req.body && (req.body.auth_token || req.body.token)) ||
+                    (req.headers.authorization && req.headers.authorization.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
+  if (bodyToken) {
+    try {
+      const payload = jwt.verify(bodyToken, JWT_SECRET);
+      if (payload && payload.email && payload.email.toLowerCase().trim() === normalizedTarget) {
+        return true;
+      }
+    } catch (e) {}
+  }
+
+  // 3. Check active Google client session
+  const sessionId = (req.body && req.body.session_id) || req.query.session_id || req.headers['x-session-id'];
+  if (sessionId && googleClientSessions.has(sessionId)) {
+    const session = googleClientSessions.get(sessionId);
+    if (session && session.email && session.email.toLowerCase().trim() === normalizedTarget) {
+      return true;
+    }
+  }
+
+  // 4. In dev mock mode (when real Google OAuth is unconfigured and not in production)
+  if (process.env.NODE_ENV !== 'production' && !GOOGLE_CLIENT_ID) {
+    if (req.headers['x-dev-mock'] === 'true' || (req.body && req.body.dev_mock === true)) {
+      console.warn(`🧪 Dev Mock Identity accepted for: ${normalizedTarget}`);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function requireAdminKey(req, res, next) {
   const key = req.headers['x-admin-key'];
   if (key && key === ADMIN_KEY) {
     return next();
   }
   
-  // Also permit authenticated owner session cookies or same-origin dashboard access
+  // Permit authenticated owner session cookies or tokens
   const ownerEmail = getOwnerEmail(req);
   if (ownerEmail) {
-    return next();
-  }
-
-  // Allow same-origin dashboard UI requests
-  const referer = req.headers.referer || req.headers.origin || '';
-  if (referer && (referer.includes('/dashboard') || referer.includes('/approve') || referer.includes('localhost:') || referer.includes('127.0.0.1:'))) {
     return next();
   }
 
@@ -345,10 +402,22 @@ app.post('/api/register', (req, res) => {
       return res.status(400).json({ error: 'owner_email is required.' });
     }
 
+    const normalizedEmail = owner_email.toLowerCase().trim();
+    const isAuthorized = verifyRequestIdentity(req, normalizedEmail);
+
+    if (!isAuthorized) {
+      if (process.env.NODE_ENV !== 'production' && !GOOGLE_CLIENT_ID) {
+        console.warn(`🧪 Dev Mode: Permitting unverified registration for ${normalizedEmail} (set GOOGLE_CLIENT_ID for production).`);
+      } else {
+        return res.status(401).json({
+          error: 'Authentication required. Sign in with Google before registering a drive.'
+        });
+      }
+    }
+
     const drive_id        = uuidv4();
     const cloud_key_share = crypto.randomBytes(32).toString('hex');
     const now             = Date.now();
-    const normalizedEmail = owner_email.toLowerCase().trim();
 
     db.prepare(`
       INSERT INTO drives (drive_id, cloud_key_share, owner_email, status, label, created_at, updated_at)
@@ -400,19 +469,6 @@ app.get('/api/owner/me', (req, res) => {
   if (!ownerEmail) return res.status(401).json({ authenticated: false });
   return res.status(200).json({ authenticated: true, owner_email: ownerEmail });
 });
-
-// In-memory desktop client Google login sessions
-const googleClientSessions = new Map();
-
-// Periodic cleanup of stale sessions older than 15 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [sid, data] of googleClientSessions.entries()) {
-    if (now - data.timestamp > 15 * 60 * 1000) {
-      googleClientSessions.delete(sid);
-    }
-  }
-}, 60 * 1000);
 
 // ──────────────────────────────────────────────
 // Real Google OAuth 2.0 & GIS Helpers
@@ -1298,6 +1354,21 @@ app.post('/api/auth-host', authLimiter, (req, res) => {
     const isAllowedUser = Boolean(accessEntry);
 
     if (isOwner || isAllowedUser) {
+      // CRITICAL (VULN-01): Cryptographically verify identity before issuing key material to untrusted device
+      const isIdentityVerified = verifyRequestIdentity(req, email);
+
+      if (!isIdentityVerified) {
+        if (process.env.NODE_ENV !== 'production' && !GOOGLE_CLIENT_ID && (req.headers['x-dev-mock'] === 'true' || (req.body && req.body.dev_mock === true))) {
+          console.warn(`🧪 Dev Mock: Permitted identity token bypass for ${email}`);
+        } else {
+          logAuthEvent(drive_id, fingerprint_hash, email, 'UNVERIFIED_IDENTITY', req);
+          return res.status(401).json({
+            status:  'IDENTITY_UNVERIFIED',
+            message: 'Cryptographic identity proof required. Please complete Continue with Google authentication.'
+          });
+        }
+      }
+
       const leaseSeconds = LEASE_DAYS * 24 * 60 * 60;
       const lease = generateLeaseToken(drive_id, fingerprint_hash, leaseSeconds);
       const now = Math.floor(Date.now() / 1000);
@@ -1458,6 +1529,14 @@ app.post('/api/approve-request', requireAdminKey, (req, res) => {
       return res.status(404).json({ error: 'Associated drive not found.' });
     }
 
+    const authOwner = getOwnerEmail(req);
+    const adminKey = req.headers['x-admin-key'];
+    const isAdmin = adminKey && adminKey === ADMIN_KEY;
+
+    if (!isAdmin && (!authOwner || drive.owner_email.toLowerCase().trim() !== authOwner.toLowerCase().trim())) {
+      return res.status(403).json({ error: 'Unauthorised. Only the verified drive owner can approve this request.' });
+    }
+
     // Calculate lease duration
     let leaseSeconds;
     const nowUnix = Math.floor(Date.now() / 1000);
@@ -1544,6 +1623,19 @@ app.post('/api/deny-request', requireAdminKey, (req, res) => {
 
     if (!request) {
       return res.status(404).json({ error: 'Pending request not found.' });
+    }
+
+    const drive = db.prepare('SELECT * FROM drives WHERE drive_id = ?').get(request.drive_id);
+    if (!drive) {
+      return res.status(404).json({ error: 'Associated drive not found.' });
+    }
+
+    const authOwner = getOwnerEmail(req);
+    const adminKey = req.headers['x-admin-key'];
+    const isAdmin = adminKey && adminKey === ADMIN_KEY;
+
+    if (!isAdmin && (!authOwner || drive.owner_email.toLowerCase().trim() !== authOwner.toLowerCase().trim())) {
+      return res.status(403).json({ error: 'Unauthorised. Only the verified drive owner can deny this request.' });
     }
 
     db.prepare(`
@@ -1765,9 +1857,17 @@ app.post('/api/sharing/add-user', requireAdminKey, (req, res) => {
       return res.status(400).json({ error: 'drive_id and email are required.' });
     }
 
-    const drive = db.prepare('SELECT drive_id FROM drives WHERE drive_id = ?').get(drive_id);
+    const drive = db.prepare('SELECT drive_id, owner_email FROM drives WHERE drive_id = ?').get(drive_id);
     if (!drive) {
       return res.status(404).json({ error: 'Drive not found.' });
+    }
+
+    const authOwner = getOwnerEmail(req);
+    const adminKey = req.headers['x-admin-key'];
+    const isAdmin = adminKey && adminKey === ADMIN_KEY;
+
+    if (!isAdmin && (!authOwner || drive.owner_email.toLowerCase().trim() !== authOwner.toLowerCase().trim())) {
+      return res.status(403).json({ error: 'Unauthorised. Only the verified drive owner can manage sharing.' });
     }
 
     const normalEmail = email.toLowerCase().trim();
@@ -1800,9 +1900,21 @@ app.post('/api/sharing/remove-user', requireAdminKey, (req, res) => {
 
     const normalEmail = email.toLowerCase().trim();
 
-    // Prevent removing owner
     const drive = db.prepare('SELECT owner_email FROM drives WHERE drive_id = ?').get(drive_id);
-    if (drive && drive.owner_email === normalEmail) {
+    if (!drive) {
+      return res.status(404).json({ error: 'Drive not found.' });
+    }
+
+    const authOwner = getOwnerEmail(req);
+    const adminKey = req.headers['x-admin-key'];
+    const isAdmin = adminKey && adminKey === ADMIN_KEY;
+
+    if (!isAdmin && (!authOwner || drive.owner_email.toLowerCase().trim() !== authOwner.toLowerCase().trim())) {
+      return res.status(403).json({ error: 'Unauthorised. Only the verified drive owner can manage sharing.' });
+    }
+
+    // Prevent removing owner
+    if (drive.owner_email === normalEmail) {
       return res.status(400).json({ error: 'Cannot remove drive owner from access list.' });
     }
 
@@ -1834,6 +1946,14 @@ app.post('/api/mark-lost', requireAdminKey, (req, res) => {
     const drive = db.prepare('SELECT * FROM drives WHERE drive_id = ?').get(drive_id);
     if (!drive) {
       return res.status(404).json({ error: 'Drive not found.' });
+    }
+
+    const authOwner = getOwnerEmail(req);
+    const adminKey = req.headers['x-admin-key'];
+    const isAdmin = adminKey && adminKey === ADMIN_KEY;
+
+    if (!isAdmin && (!authOwner || drive.owner_email.toLowerCase().trim() !== authOwner.toLowerCase().trim())) {
+      return res.status(403).json({ error: 'Unauthorised. Only the verified drive owner can mark this drive as lost.' });
     }
 
     if (drive.status === 'LOST') {
@@ -1911,6 +2031,14 @@ app.post('/api/reactivate', requireAdminKey, (req, res) => {
 
     const drive = db.prepare('SELECT * FROM drives WHERE drive_id = ?').get(drive_id);
     if (!drive) return res.status(404).json({ error: 'Drive not found.' });
+
+    const authOwner = getOwnerEmail(req);
+    const adminKey = req.headers['x-admin-key'];
+    const isAdmin = adminKey && adminKey === ADMIN_KEY;
+
+    if (!isAdmin && (!authOwner || drive.owner_email.toLowerCase().trim() !== authOwner.toLowerCase().trim())) {
+      return res.status(403).json({ error: 'Unauthorised. Only the verified drive owner can reactivate this drive.' });
+    }
     if (drive.status === 'ACTIVE') {
       return res.status(200).json({ message: 'Drive is already ACTIVE.', drive_id, status: 'ACTIVE' });
     }
@@ -2156,7 +2284,9 @@ app.get('/api/dashboard/pending', requireAdminKey, (req, res) => {
     let pending;
     if (isAdmin || !ownerEmail) {
       pending = db.prepare(`
-        SELECT pr.*, d.label as drive_label, d.owner_email
+        SELECT pr.request_id, pr.drive_id, pr.hardware_fingerprint, pr.requester_email,
+               pr.status, pr.granted_scope, pr.expires_at, pr.created_at, pr.resolved_at,
+               d.label as drive_label, d.owner_email
         FROM pending_requests pr
         LEFT JOIN drives d ON pr.drive_id = d.drive_id
         WHERE pr.status = 'PENDING'
@@ -2164,7 +2294,9 @@ app.get('/api/dashboard/pending', requireAdminKey, (req, res) => {
       `).all();
     } else {
       pending = db.prepare(`
-        SELECT pr.*, d.label as drive_label, d.owner_email
+        SELECT pr.request_id, pr.drive_id, pr.hardware_fingerprint, pr.requester_email,
+               pr.status, pr.granted_scope, pr.expires_at, pr.created_at, pr.resolved_at,
+               d.label as drive_label, d.owner_email
         FROM pending_requests pr
         JOIN drives d ON pr.drive_id = d.drive_id
         WHERE d.owner_email = ? AND pr.status = 'PENDING'
@@ -2173,10 +2305,13 @@ app.get('/api/dashboard/pending', requireAdminKey, (req, res) => {
     }
 
     return res.status(200).json({
-      pending: pending.map(p => ({
-        ...p,
-        created_at: new Date(p.created_at).toISOString()
-      }))
+      pending: pending.map(p => {
+        const { cloud_key_share, lease_token, ...safeFields } = p;
+        return {
+          ...safeFields,
+          created_at: new Date(safeFields.created_at).toISOString()
+        };
+      })
     });
   } catch (err) {
     console.error('Dashboard pending error:', err);
