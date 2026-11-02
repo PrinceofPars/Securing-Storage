@@ -1,5 +1,5 @@
 """
-crypto_engine.py — Split-Key AES-256-GCM Encryption Engine v2
+crypto_engine.py — Split-Key AES-256-GCM Encryption Engine v3
 ================================================================
 Implements the cryptographic core of the USB Killswitch system.
 
@@ -9,7 +9,7 @@ Key Architecture:
   K_master  : Derived from K_local XOR K_cloud via HKDF
                → Used as the AES-256 encryption key for vault.enc
 
-Vault Format v2 (vault.enc) — Tail-Manifest Design:
+Vault Format v3 (vault.enc) — Encapsulated Tail-Manifest Design:
   ┌──────────────────────────────────────────────┐
   │  Magic header       (8 bytes: "USBVLT02")    │
   │  Salt               (32 bytes)               │
@@ -413,7 +413,7 @@ def hex_to_key_bytes(hex_str: str) -> bytes:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Vault Encryption — v2 Tail-Manifest Format
+# Vault Encryption — v3 Encapsulated Tail-Manifest Format
 # ──────────────────────────────────────────────────────────────────────────────
 
 def encrypt_folder_to_vault(
@@ -1199,7 +1199,7 @@ if __name__ == '__main__':
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     logging.basicConfig(level=logging.DEBUG)
 
-    print("Crypto Engine v2 — Self-test")
+    print("Crypto Engine v3 — Self-test")
     print("-" * 40)
 
     # Test key derivation

@@ -814,7 +814,7 @@
         </div>
         <div class="brand-name">
           USB Killswitch
-          <span class="brand-version">v2.0</span>
+          <span class="brand-version">v3.0</span>
         </div>
       </a>
     </div>
@@ -1478,7 +1478,7 @@
         document.getElementById('statusDot').style.background = 'var(--status-ok)';
         const h = healthRes.data || {};
         document.getElementById('statusText').textContent =
-          `v${h.version || '2.0'} • ${h.drive_count || 0} vaults • ${h.pending_count || 0} pending`;
+          `v${h.version || '3.0'} • ${h.drive_count || 0} vaults • ${h.pending_count || 0} pending`;
 
         await refreshLogs(drivesRes.data.drives || []);
       } catch (e) {

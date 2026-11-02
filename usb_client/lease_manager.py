@@ -1,10 +1,10 @@
 """
-lease_manager.py — Offline Lease Manager v2
+lease_manager.py — Offline Lease Manager v3
 =============================================
 Manages the cryptographically signed local lease token that enables
 offline vault access after the last successful online authentication.
 
-v2 Changes:
+v3 Changes:
   - online_auth() now sends user_email, handles 202 PENDING_APPROVAL
   - New poll_request_status() for waiting-for-approval flow
   - authenticate() returns a four-tuple with PENDING as a possible outcome
@@ -298,7 +298,7 @@ def clear_lease_token(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Online Authentication Flow (v2: now handles PENDING_APPROVAL)
+# Online Authentication Flow (v3: handles PENDING_APPROVAL and encapsulated vault headers)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def online_auth(

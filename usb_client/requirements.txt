@@ -1,4 +1,4 @@
-# USB Killswitch v2 Client — Python Dependencies
+# USB Killswitch v3 Client — Python Dependencies
 # Install with: pip install -r requirements.txt
 
 # AES-256-GCM encryption and HKDF key derivation

@@ -1,4 +1,4 @@
-# 🛡️ USB Killswitch v2 — Zero-Trust Encrypted Storage
+# 🛡️ USB Killswitch v3 — Zero-Trust Encrypted Storage
 
 > **Remote-Killable Encrypted USB Storage with Split-Key Cryptography, Tail-Manifest Vaults, Out-of-Band Mobile Approvals, and Offline Hardware Leases.**
 
@@ -103,7 +103,7 @@ graph TB
 | **Instant Remote Killswitch** | One-click emergency lockout from the web dashboard that immediately revokes key delivery worldwide. |
 | **Hardware Fingerprint Binding** | Binds sessions to unique CPU, motherboard, and disk signatures to prevent token cloning. |
 | **Offline Time-Bounded Leases** | Digitally signed cryptographic tokens allow working offline (e.g., in-flight) for defined periods without active internet. |
-| **Encapsulated 2-File Architecture** | Prepend the local key (`K_local`), configuration, and lease token into an authenticated 4 KB header inside `vault.enc` — exactly 2 files exist on the USB: `Zero-Trust.exe` and `vault.enc`. |
+| **Encapsulated 2-File Architecture** | Prepend the local key (`K_local`), configuration, and lease token into an authenticated 4 KB header inside `vault.enc` — exactly 2 files exist on the USB: `Zero-Trust_V3.exe` and `vault.enc`. |
 | **Tail-Manifest Vault Format** | Single-file encrypted container (`vault.enc`) with tamper-proof authenticated file manifests. |
 | **Single-File On-Demand Decrypt** | Decrypts only the specific file opened into a temporary RAM workspace, re-encrypts changes, and securely shreds cache upon locking. |
 | **Central Admin Dashboard** | Full web UI for managing drive fleets, access control lists (ACLs), approval queues, and immutable forensic audit logs. |
@@ -127,7 +127,7 @@ Storage Protection/
 │   ├── lease_manager.py            # Offline signed lease validator & storage
 │   └── requirements.txt            # Python client dependencies
 ├── dist/
-│   └── USB_Killswitch.exe          # Standalone, single-file compiled portable executable
+│   └── Zero-Trust_V3.exe           # Standalone, single-file compiled portable executable
 ├── QUICKSTART.md                   # Comprehensive deployment & usage guide
 └── README.md                       # Main project documentation
 ```
@@ -152,7 +152,7 @@ npm start
 ### 2. Launch the Desktop Client
 
 #### Option A: Run the Standalone Portable Executable (Recommended)
-Copy `dist/USB_Killswitch.exe` directly onto your USB drive and double-click to launch.
+Copy `dist/Zero-Trust_V3.exe` directly onto your USB drive and double-click to launch.
 
 #### Option B: Run from Source
 ```bash

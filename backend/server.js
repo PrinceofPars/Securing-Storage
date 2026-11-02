@@ -1,6 +1,6 @@
 /**
  * ============================================================
- * USB Killswitch v2 — Identity & Key Management Backend
+ * USB Killswitch v3 — Identity & Key Management Backend
  * ============================================================
  *
  * Features:
@@ -417,7 +417,7 @@ function generateLeaseToken(drive_id, fingerprint_hash, leaseSeconds) {
 
 // ──────────────────────────────────────────────
 // Route: POST /api/register
-// Register new drive (Admin key no longer required in v2)
+// Register new drive (Admin key no longer required in v3)
 // ──────────────────────────────────────────────
 
 app.post('/api/register', (req, res) => {
@@ -2700,8 +2700,8 @@ app.get('/api/health', (req, res) => {
 
   return res.status(200).json({
     status:        'ok',
-    service:       'USB Killswitch v2 Backend',
-    version:       '2.0.0',
+    service:       'USB Killswitch v3 Backend',
+    version:       '3.0.0',
     drive_count:   driveCount,
     pending_count: pendingCount,
     timestamp:     new Date().toISOString()
@@ -2739,7 +2739,7 @@ app.use((err, req, res, _next) => {
 // ──────────────────────────────────────────────
 
 app.listen(PORT, () => {
-  console.log(`\n🔒  USB Killswitch v2 Backend running on http://localhost:${PORT}`);
+  console.log(`\n🔒  USB Killswitch v3 Backend running on http://localhost:${PORT}`);
   console.log(`📡  Dashboard: http://localhost:${PORT}/dashboard`);
   console.log(`📡  API Endpoints:`);
   console.log(`    POST /api/register            — Register new drive`);

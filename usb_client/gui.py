@@ -1,5 +1,5 @@
 """
-gui.py — USB Killswitch v2 High-Assurance Desktop GUI Client
+gui.py — USB Killswitch v3 High-Assurance Desktop GUI Client
 ============================================================
 Engineered desktop application built with CustomTkinter.
 Designed for high usability, ergonomic clarity, and robust offline/online security.

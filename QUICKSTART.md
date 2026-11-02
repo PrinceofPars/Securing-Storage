@@ -1,4 +1,4 @@
-# 🚀 USB Killswitch v2 — Complete Quickstart & Deployment Guide
+# 🚀 USB Killswitch v3 — Complete Quickstart & Deployment Guide
 
 A Zero-Trust, Remote-Killable Encrypted USB Drive System featuring Split-Key AES-256-GCM Cryptography, Tail-Manifest Vaults, a Web Management Dashboard, and Dual-Method Out-of-Band Device Approvals (Mobile QR Code + Google Web Portal).
 
@@ -21,9 +21,9 @@ A Zero-Trust, Remote-Killable Encrypted USB Drive System featuring Split-Key AES
                        │               │
    ┌───────────────────▼───────────────┴────────────────────┐
    │                  2. DESKTOP CLIENT (GUI)               │
-   │           CustomTkinter + Crypto Engine v2             │
-   │  • Portable Standalone EXE: Zero-Trust.exe             │
-   │  • Encapsulated 2-File Architecture: Zero-Trust.exe & vault.enc │
+   │           CustomTkinter + Crypto Engine v3             │
+   │  • Portable Standalone EXE: Zero-Trust_V3.exe          │
+   │  • Encapsulated 2-File Architecture: Zero-Trust_V3.exe & vault.enc │
    │  • Header Packing: K_local, config, and lease inside vault.enc │
    │  • Tail-Manifest Vault (vault.enc)                     │
    │  • On-Demand Decryption & Incremental Lock & Save      │
@@ -179,7 +179,7 @@ Designed with a dark glassmorphism mobile UI for smartphone screens.
 
 ### Step A: Initialize an Encrypted USB Drive
 
-1. Launch `USB_Killswitch.exe`.
+1. Launch `Zero-Trust_V3.exe`.
 2. Authenticate with **"Continue with Google"** or enter your **Owner Email** (e.g. `owner@gmail.com`).
 3. Click **Browse...** and choose the folder you want to protect.
 4. *(Optional)* Check *"Securely wipe original folder files"* to erase unencrypted originals.
@@ -189,7 +189,7 @@ Designed with a dark glassmorphism mobile UI for smartphone screens.
 
 ### Step B: Unlocking on Owner's Registered Computer
 
-1. Open `Zero-Trust.exe` (or `USB_Killswitch.exe`).
+1. Open `Zero-Trust_V3.exe`.
 2. Click **`Unlock Vault`**.
 3. **Result**: Unlocks instantly via auto-trusted hardware fingerprint binding (or offline lease token encapsulated directly in `vault.enc` header).
 
@@ -197,7 +197,7 @@ Designed with a dark glassmorphism mobile UI for smartphone screens.
 
 ### Step C: Connecting to an Unrecognized Computer (Guest / Colleague)
 
-1. Open `USB_Killswitch.exe` on the new machine.
+1. Open `Zero-Trust_V3.exe` on the new machine.
 2. Enter email and click **`Unlock Vault`**.
 3. The modern **Dual-Authentication Waiting Screen** appears:
 
