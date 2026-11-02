@@ -540,6 +540,15 @@
       gap: 6px;
       box-shadow: var(--shadow-btn);
       transition: all 0.15s ease;
+      text-decoration: none;
+    }
+    .cmd-btn svg {
+      width: 14px;
+      height: 14px;
+      margin-bottom: 0;
+      opacity: 1;
+      color: inherit;
+      flex-shrink: 0;
     }
     .cmd-btn:hover:not(:disabled) {
       background: var(--bg-hover);
@@ -709,7 +718,8 @@
       border-radius: var(--radius-md);
       color: var(--text-dim);
     }
-    .empty-state svg {
+    .empty-state > svg,
+    .empty-state-icon {
       width: 32px;
       height: 32px;
       margin-bottom: 10px;
@@ -720,6 +730,25 @@
       font-size: 13px;
       font-weight: 500;
       color: var(--text-muted);
+    }
+    .empty-state-desc {
+      font-size: 12px;
+      color: var(--text-dim);
+      max-width: 480px;
+      margin: 8px auto 0;
+      line-height: 1.5;
+    }
+    .empty-state-card {
+      margin-top: 18px;
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 20px;
+      background: var(--bg-surface-elev);
+      border: 1px solid var(--border-base);
+      border-radius: var(--radius-md);
+      max-width: 520px;
     }
 
     /* ─── Toast Alerts ─── */
@@ -879,6 +908,21 @@
             <line x1="2" y1="12" x2="22" y2="12"/>
           </svg>
           <div class="empty-state-text">No storage units registered.</div>
+          <div class="empty-state-desc">To get started, download the application to be saved and run on your pendrive.</div>
+          <div class="empty-state-card">
+            <a href="https://github.com/PrinceofPars/Securing-Storage/releases" target="_blank" rel="noopener noreferrer" class="cmd-btn primary" style="padding: 8px 16px; font-size: 13px; font-weight: 600;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Download Client Application
+            </a>
+            <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
+              <span style="font-size: 11px; color: var(--text-dim);">Save &amp; run on your pendrive to pair with this console:</span>
+              <a href="https://github.com/PrinceofPars/Securing-Storage/releases" target="_blank" rel="noopener noreferrer" style="font-family: var(--font-mono); font-size: 11px; color: var(--accent); text-decoration: underline; word-break: break-all;">https://github.com/PrinceofPars/Securing-Storage/releases</a>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -1105,6 +1149,21 @@
               <line x1="2" y1="12" x2="22" y2="12"/>
             </svg>
             <div class="empty-state-text">No storage units registered.</div>
+            <div class="empty-state-desc">To get started, download the application to be saved and run on your pendrive.</div>
+            <div class="empty-state-card">
+              <a href="https://github.com/PrinceofPars/Securing-Storage/releases" target="_blank" rel="noopener noreferrer" class="cmd-btn primary" style="padding: 8px 16px; font-size: 13px; font-weight: 600;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                Download Client Application
+              </a>
+              <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
+                <span style="font-size: 11px; color: var(--text-dim);">Save &amp; run on your pendrive to pair with this console:</span>
+                <a href="https://github.com/PrinceofPars/Securing-Storage/releases" target="_blank" rel="noopener noreferrer" style="font-family: var(--font-mono); font-size: 11px; color: var(--accent); text-decoration: underline; word-break: break-all;">https://github.com/PrinceofPars/Securing-Storage/releases</a>
+              </div>
+            </div>
           </div>`;
         return;
       }
